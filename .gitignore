@@ -1,0 +1,57 @@
+# ========================
+# Node.js
+# ========================
+node_modules/
+package-lock.json
+
+# ========================
+# Build / Dist Çıktıları
+# ========================
+dist/
+build/
+out/
+release/
+*.exe
+
+# ========================
+# Python
+# ========================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+env/
+*.egg-info/
+*.egg
+
+# ========================
+# IDE & Editör
+# ========================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ========================
+# OS
+# ========================
+desktop.ini
+*.lnk
+
+# ========================
+# Geçici Dosyalar
+# ========================
+*.log
+*.tmp
+*.bak
+*.backup
+
+# ========================
+# Yedek Dosyalar
+# ========================
+*_backup.*

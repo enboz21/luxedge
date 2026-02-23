@@ -1,0 +1,55 @@
+{
+    "name": "luxedge",
+    "version": "1.2.0",
+    "description": "LuxEdge - DIY Ambilight System for Monitor Backlighting",
+    "main": "main.js",
+    "scripts": {
+        "start": "node launcher.js",
+        "pack": "electron-builder --dir",
+        "dist": "electron-builder"
+    },
+    "build": {
+        "appId": "com.luxedge.app",
+        "productName": "LuxEdge",
+        "files": [
+            "main.js",
+            "preload.js",
+            "launcher.js",
+            "package.json",
+            "web_ui/**/*"
+        ],
+        "extraResources": [
+            {
+                "from": "ambilight_pc.py",
+                "to": "ambilight_pc.py"
+            },
+            {
+                "from": "ambilight_config.json",
+                "to": "ambilight_config.json"
+            },
+            {
+                "from": "requirements.txt",
+                "to": "requirements.txt"
+            }
+        ],
+        "nsis": {
+            "oneClick": false,
+            "allowToChangeInstallationDirectory": true,
+            "createDesktopShortcut": true,
+            "createStartMenuShortcut": true,
+            "runAfterFinish": true,
+            "installerIcon": null,
+            "uninstallerIcon": null,
+            "installerHeaderIcon": null,
+            "shortcutName": "LuxEdge"
+        },
+        "win": {
+            "target": "nsis",
+            "signAndEditExecutable": false
+        }
+    },
+    "devDependencies": {
+        "electron": "^28.0.0",
+        "electron-builder": "^24.9.1"
+    }
+}
