@@ -4,7 +4,7 @@
     <strong>Monitör arkası LED aydınlatmasını otomatik olarak yöneten, Electron + Python tabanlı masaüstü uygulaması</strong>
   </p>
   <p align="center">
-    <img src="https://img.shields.io/badge/version-1.2.0-blue?style=flat-square" alt="Version">
+    <img src="https://img.shields.io/badge/version-1.2.1-blue?style=flat-square" alt="Version">
     <img src="https://img.shields.io/badge/platform-Windows-0078D6?style=flat-square&logo=windows" alt="Platform">
     <img src="https://img.shields.io/badge/license-CC%20BY--NC%204.0-green?style=flat-square" alt="License">
     <img src="https://img.shields.io/badge/hardware-ESP8266%20(Wemos)-red?style=flat-square" alt="Hardware">
@@ -119,6 +119,38 @@ npm start
 
 ---
 
+## 🔨 Derleme (Build)
+
+Kurulum dosyası (installer) oluşturmak için:
+
+### 1. Python Backend'i EXE'ye Çevirin
+Python backend'i `lush_backend.exe` olarak derlemeniz gerekir:
+```bash
+pip install pyinstaller
+python -m PyInstaller --onefile --noconsole --name lush_backend ambilight_pc.py
+copy dist\lush_backend.exe lush_backend.exe
+```
+
+### 2. Electron Installer Oluşturun
+```bash
+npm run dist
+```
+
+Bu komut `dist/` klasöründe **LuxEdge Setup X.X.X.exe** dosyasını oluşturur.
+
+> ⚠️ **Not:** Windows'ta code signing hatası alırsanız, `package.json`'da `"signAndEditExecutable": false` ayarlayın.
+
+### Build Çıktıları
+```
+dist/
+├── LuxEdge Setup 1.2.1.exe    # NSIS Installer (dağıtılabilir)
+├── win-unpacked/              # Portable versiyon
+│   └── LuxEdge.exe
+└── ...
+```
+
+---
+
 ## 📡 İlk Bağlantı (Wemos Kurulumu)
 
 1. Wemos'u çalıştırın — **mavi LED** yanar ve `Wemos_Setup` adında bir Wi-Fi hotspot oluşturur
@@ -159,8 +191,10 @@ luxedge/
 ├── main.js              # Electron ana süreç (pencere, IPC, Python yönetimi)
 ├── preload.js           # Güvenli IPC köprüsü (contextIsolation)
 ├── launcher.js          # Electron başlatıcı
-├── ambilight_pc.py      # Python backend (ekran yakalama, UDP, HTTP API)
+├── ambilight_pc.py      # Python backend kaynak kodu
+├── lush_backend.exe     # Python backend (PyInstaller ile derlenmiş)
 ├── package.json         # Node.js bağımlılıkları ve build ayarları
+├── package-lock.json    # Bağımlılık versiyon kilitleme
 ├── requirements.txt     # Python bağımlılıkları
 ├── ambilight_config.json # Kullanıcı ayarları (otomatik oluşturulur)
 ├── web_ui/
@@ -214,7 +248,13 @@ luxedge/
 
 ## 📝 Sürüm Geçmişi
 
-### v1.2.0 (Güncel)
+### v1.2.1 (Güncel)
+- ✅ Paketlenmiş uygulamada Python backend başlatma düzeltmesi
+- ✅ lush_backend.exe yeniden derlendi (güncel UDP PING/PONG)
+- ✅ Detaylı backend başlatma logları
+- ✅ Fallback: exe yoksa sistem Python'ı ile çalıştırma
+
+### v1.2.0
 - ✅ Ağ taraması ile bulunan IP'nin otomatik kaydedilmesi
 - ✅ Worker'ın IP değişikliklerini canlı algılaması (restart gerekmez)
 - ✅ UDP PING/PONG bağlantı kontrolü (Wemos firmware uyumlu)

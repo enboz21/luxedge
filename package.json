@@ -1,6 +1,6 @@
 {
     "name": "luxedge",
-    "version": "1.2.0",
+    "version": "1.2.1",
     "description": "LuxEdge - DIY Ambilight System for Monitor Backlighting",
     "main": "main.js",
     "scripts": {
@@ -19,6 +19,10 @@
             "web_ui/**/*"
         ],
         "extraResources": [
+            {
+                "from": "lush_backend.exe",
+                "to": "lush_backend.exe"
+            },
             {
                 "from": "ambilight_pc.py",
                 "to": "ambilight_pc.py"

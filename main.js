@@ -63,19 +63,47 @@ function startPython() {
     return new Promise((resolve) => {
         console.log("[LuxEdge] Python backend başlatılıyor...");
 
-        let executable, args;
+        const fs = require('fs');
+        let executable, args, cwd;
+
         if (app.isPackaged) {
             // Paketlenmiş mod: extraResources içindeki .exe'yi kullan
-            executable = path.join(process.resourcesPath, 'lush_backend.exe');
-            args = ['--no-tray'];
+            const exePath = path.join(process.resourcesPath, 'lush_backend.exe');
+            const pyPath = path.join(process.resourcesPath, 'ambilight_pc.py');
+
+            console.log(`[LuxEdge] Resources path: ${process.resourcesPath}`);
+            console.log(`[LuxEdge] Backend exe: ${exePath} (var: ${fs.existsSync(exePath)})`);
+            console.log(`[LuxEdge] Backend py: ${pyPath} (var: ${fs.existsSync(pyPath)})`);
+
+            if (fs.existsSync(exePath)) {
+                // PyInstaller exe mevcut — onu kullan
+                executable = exePath;
+                args = ['--no-tray'];
+                cwd = process.resourcesPath;
+                console.log("[LuxEdge] PyInstaller exe kullanılıyor");
+            } else if (fs.existsSync(pyPath)) {
+                // Exe yok ama py var — sistem Python'ı dene
+                executable = 'python';
+                args = [pyPath, '--no-tray'];
+                cwd = process.resourcesPath;
+                console.log("[LuxEdge] Sistem Python kullanılıyor (fallback)");
+            } else {
+                console.error("[LuxEdge] HATA: Ne lush_backend.exe ne ambilight_pc.py bulunamadı!");
+                resolve(false);
+                return;
+            }
         } else {
             // Geliştirme modu: python scripti kullan
             executable = 'python';
             args = ['ambilight_pc.py', '--no-tray'];
+            cwd = __dirname;
         }
 
+        console.log(`[LuxEdge] Çalıştırılıyor: ${executable} ${args.join(' ')}`);
+        console.log(`[LuxEdge] Çalışma dizini: ${cwd}`);
+
         pythonProcess = spawn(executable, args, {
-            cwd: app.isPackaged ? path.dirname(executable) : __dirname,
+            cwd: cwd,
             env: { ...process.env, PYTHONUNBUFFERED: "1" },
             windowsHide: true
         });

@@ -2,7 +2,6 @@
 # Node.js
 # ========================
 node_modules/
-package-lock.json
 
 # ========================
 # Build / Dist Çıktıları
@@ -11,7 +10,7 @@ dist/
 build/
 out/
 release/
-*.exe
+*.spec
 
 # ========================
 # Python
@@ -20,11 +19,8 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
-.Python
 venv/
 env/
-*.egg-info/
-*.egg
 
 # ========================
 # IDE & Editör
@@ -44,14 +40,9 @@ desktop.ini
 *.lnk
 
 # ========================
-# Geçici Dosyalar
+# Geçici / Yedek Dosyalar
 # ========================
 *.log
 *.tmp
 *.bak
-*.backup
-
-# ========================
-# Yedek Dosyalar
-# ========================
 *_backup.*
