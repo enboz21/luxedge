@@ -1,6 +1,6 @@
 {
     "name": "luxedge",
-    "version": "1.2.1",
+    "version": "1.3.0",
     "description": "LuxEdge - DIY Ambilight System for Monitor Backlighting",
     "main": "main.js",
     "scripts": {

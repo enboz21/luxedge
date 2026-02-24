@@ -636,11 +636,13 @@ def check_startup():
 # ============================================================
 
 def average_color(img):
-    """Görüntünün ortalama rengini hesaplar"""
-    arr = np.array(img)
-    return tuple(np.mean(arr.reshape(-1, 3), axis=0).astype(int))
+    """Bölgesel ortalama rengi hesaplar"""
+    arr = np.array(img).reshape(-1, 3)
+    
+    # Tüm piksellerin doğrudan ortalamasını al
+    return tuple(np.mean(arr, axis=0).astype(int))
 
-def grab_edge_colors(top_leds, bottom_leds, left_leds, right_leds, edge_width, sct):
+def grab_edge_colors(top_leds, bottom_leds, left_leds, right_leds, edge_width, edge_offset, sct):
     """Ekran kenarlarından renkleri toplar"""
     monitor = sct.monitors[1]
     screenshot = sct.grab(monitor)
@@ -653,25 +655,25 @@ def grab_edge_colors(top_leds, bottom_leds, left_leds, right_leds, edge_width, s
     for i in range(right_leds):
         y1 = int((right_leds - 1 - i) * h / right_leds)
         y2 = int((right_leds - i) * h / right_leds)
-        final_colors.append(average_color(img.crop((w - edge_width, y1, w, y2))))
+        final_colors.append(average_color(img.crop((w - edge_width - edge_offset, y1, w - edge_offset, y2))))
 
     # 2) TOP side (right → left)
     for i in range(top_leds):
         x1 = int((top_leds - 1 - i) * w / top_leds)
         x2 = int((top_leds - i) * w / top_leds)
-        final_colors.append(average_color(img.crop((x1, 0, x2, edge_width))))
+        final_colors.append(average_color(img.crop((x1, edge_offset, x2, edge_width + edge_offset))))
 
     # 3) LEFT side (top → bottom)
     for i in range(left_leds):
         y1 = int(i * h / left_leds)
         y2 = int((i + 1) * h / left_leds)
-        final_colors.append(average_color(img.crop((0, y1, edge_width, y2))))
+        final_colors.append(average_color(img.crop((edge_offset, y1, edge_width + edge_offset, y2))))
 
     # 4) BOTTOM side (left → right)
     for i in range(bottom_leds):
         x1 = int(i * w / bottom_leds)
         x2 = int((i + 1) * w / bottom_leds)
-        final_colors.append(average_color(img.crop((x1, h - edge_width, x2, h))))
+        final_colors.append(average_color(img.crop((x1, h - edge_width - edge_offset, x2, h - edge_offset))))
 
     return final_colors
 
@@ -697,6 +699,7 @@ app_status = {
     "total_leds": 0,
     "fps": 60,
     "edge_width": 20,
+    "edge_offset": 0,
     "local_ip": "",
     "subnet": "",
     "packets_sent": 0,
@@ -1126,6 +1129,7 @@ def ambilight_worker(config):
     WEMOS_PORT = config.get("wemos_port", 7777)
     FPS = config.get("fps", 60)
     EDGE_WIDTH = config.get("edge_width", 20)
+    EDGE_OFFSET = config.get("edge_offset", 0)
     
     TOTAL_LEDS = TOP_LEDS + BOTTOM_LEDS + LEFT_LEDS + RIGHT_LEDS
     
@@ -1141,6 +1145,7 @@ def ambilight_worker(config):
     update_status("total_leds", TOTAL_LEDS)
     update_status("fps", FPS)
     update_status("edge_width", EDGE_WIDTH)
+    update_status("edge_offset", EDGE_OFFSET)
     update_status("running", True)
     update_status("uptime_start", time.time())
     update_status("connection", "bağlanıyor" if WEMOS_IP else "IP Bekleniyor...")
@@ -1180,6 +1185,31 @@ def ambilight_worker(config):
                 config_check_timer = current_time_check
                 new_config = load_config()
                 if new_config:
+                    # Canlı config güncelleme (Yeniden başlatmaya gerek kalmadan tüm ayarları yansıt)
+                    new_top = new_config.get("top_leds", TOP_LEDS)
+                    new_bottom = new_config.get("bottom_leds", BOTTOM_LEDS)
+                    new_left = new_config.get("left_leds", LEFT_LEDS)
+                    new_right = new_config.get("right_leds", RIGHT_LEDS)
+                    new_width = new_config.get("edge_width", EDGE_WIDTH)
+                    new_offset = new_config.get("edge_offset", EDGE_OFFSET)
+                    
+                    if (new_top != TOP_LEDS or new_bottom != BOTTOM_LEDS or 
+                        new_left != LEFT_LEDS or new_right != RIGHT_LEDS or 
+                        new_width != EDGE_WIDTH or new_offset != EDGE_OFFSET):
+                        TOP_LEDS, BOTTOM_LEDS = new_top, new_bottom
+                        LEFT_LEDS, RIGHT_LEDS = new_left, new_right
+                        EDGE_WIDTH, EDGE_OFFSET = new_width, new_offset
+                        TOTAL_LEDS = TOP_LEDS + BOTTOM_LEDS + LEFT_LEDS + RIGHT_LEDS
+                        
+                        update_status("top_leds", TOP_LEDS)
+                        update_status("bottom_leds", BOTTOM_LEDS)
+                        update_status("left_leds", LEFT_LEDS)
+                        update_status("right_leds", RIGHT_LEDS)
+                        update_status("total_leds", TOTAL_LEDS)
+                        update_status("edge_width", EDGE_WIDTH)
+                        update_status("edge_offset", EDGE_OFFSET)
+                        print("✓ (Worker) LED / Kenar Konfigürasyonları Canlı Olarak Güncellendi.")
+                    
                     new_ip = new_config.get("wemos_ip", "")
                     if new_ip and new_ip != WEMOS_IP:
                         print(f"✓ (Worker) IP değişti: '{WEMOS_IP}' → '{new_ip}'")
@@ -1202,7 +1232,7 @@ def ambilight_worker(config):
                 continue
 
             try:
-                colors = grab_edge_colors(TOP_LEDS, BOTTOM_LEDS, LEFT_LEDS, RIGHT_LEDS, EDGE_WIDTH, sct)
+                colors = grab_edge_colors(TOP_LEDS, BOTTOM_LEDS, LEFT_LEDS, RIGHT_LEDS, EDGE_WIDTH, EDGE_OFFSET, sct)
                 data = bytearray()
 
                 for r, g, b in colors:
@@ -1272,7 +1302,8 @@ def main():
             "wemos_ip": "",  # BOŞ BAŞLASIN (Yanlış yere bağlanmasın)
             "wemos_port": 7777,
             "fps": 60,
-            "edge_width": 20
+            "edge_width": 20,
+            "edge_offset": 0
         }
 
     # Konfigürasyon değerlerini al
@@ -1284,6 +1315,7 @@ def main():
     WEMOS_PORT = config.get("wemos_port", 7777)
     FPS = config.get("fps", 60)
     EDGE_WIDTH = config.get("edge_width", 20)
+    EDGE_OFFSET = config.get("edge_offset", 0)
     TOTAL_LEDS = TOP_LEDS + RIGHT_LEDS + BOTTOM_LEDS + LEFT_LEDS
     
     print(f"\n📺 LED Konfigürasyonu:")
@@ -1312,6 +1344,7 @@ def main():
     update_status("total_leds", TOTAL_LEDS)
     update_status("fps", FPS)
     update_status("edge_width", EDGE_WIDTH)
+    update_status("edge_offset", EDGE_OFFSET)
     update_status("running", True)
     update_status("uptime_start", time.time())
     update_status("connection", "bağlanıyor" if WEMOS_IP else "IP bekleniyor...")

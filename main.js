@@ -148,11 +148,12 @@ function killPython() {
     if (pythonProcess) {
         try {
             if (process.platform === 'win32') {
-                spawn('taskkill', ['/pid', pythonProcess.pid.toString(), '/f', '/t'], { windowsHide: true });
+                const { spawnSync } = require('child_process');
+                spawnSync('taskkill', ['/pid', pythonProcess.pid.toString(), '/f', '/t'], { windowsHide: true });
             } else {
-                pythonProcess.kill('SIGTERM');
+                pythonProcess.kill('SIGKILL');
             }
-        } catch (e) { /* */ }
+        } catch (e) { console.error('[LuxEdge] Python kapatma hatası:', e); }
         pythonProcess = null;
     }
 }

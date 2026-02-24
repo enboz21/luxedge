@@ -658,6 +658,18 @@
                                 <label style="font-size: 12px; color: var(--text-secondary);">Sağ Kenar</label>
                                 <input type="number" id="right_leds" class="input-control" value="0">
                             </div>
+                            <div>
+                                <label style="font-size: 12px; color: var(--text-secondary);"
+                                    title="Kenardan alınan renk bölgesinin kalınlığı. Çok yüksek yaparsanız performans düşebilir.">Tarama
+                                    Kalınlığı (px)</label>
+                                <input type="number" id="edge_width" class="input-control" value="20">
+                            </div>
+                            <div>
+                                <label style="font-size: 12px; color: var(--text-secondary);"
+                                    title="Ekran kenarından ne kadar piksellik alanın atlanacağı.">İçeri Kaydırma
+                                    (px)</label>
+                                <input type="number" id="edge_offset" class="input-control" value="0">
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -729,6 +741,8 @@
             bottomLeds: document.getElementById('bottom_leds'),
             leftLeds: document.getElementById('left_leds'),
             rightLeds: document.getElementById('right_leds'),
+            edgeWidth: document.getElementById('edge_width'),
+            edgeOffset: document.getElementById('edge_offset'),
             manualIpInput: document.getElementById('manual-ip-input')
         };
 
@@ -793,6 +807,8 @@
                 if (status.bottom_leds !== undefined) els.bottomLeds.value = status.bottom_leds;
                 if (status.left_leds !== undefined) els.leftLeds.value = status.left_leds;
                 if (status.right_leds !== undefined) els.rightLeds.value = status.right_leds;
+                if (status.edge_width !== undefined) els.edgeWidth.value = status.edge_width;
+                if (status.edge_offset !== undefined) els.edgeOffset.value = status.edge_offset;
             }
         }
 
@@ -828,9 +844,8 @@
                     bottom_leds: parseInt(els.bottomLeds.value) || 0,
                     left_leds: parseInt(els.leftLeds.value) || 0,
                     right_leds: parseInt(els.rightLeds.value) || 0,
-                    // Diğer varsayılan değerler backend tarafından korunacaktır
-                    edge_width: 20,
-                    led_offset: 0
+                    edge_width: parseInt(els.edgeWidth.value) || 20,
+                    edge_offset: parseInt(els.edgeOffset.value) || 0
                 };
 
                 await api.saveConfig(config);

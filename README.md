@@ -4,7 +4,7 @@
     <strong>Monitör arkası LED aydınlatmasını otomatik olarak yöneten, Electron + Python tabanlı masaüstü uygulaması</strong>
   </p>
   <p align="center">
-    <img src="https://img.shields.io/badge/version-1.2.1-blue?style=flat-square" alt="Version">
+    <img src="https://img.shields.io/badge/version-1.3.0-blue?style=flat-square" alt="Version">
     <img src="https://img.shields.io/badge/platform-Windows-0078D6?style=flat-square&logo=windows" alt="Platform">
     <img src="https://img.shields.io/badge/license-CC%20BY--NC%204.0-green?style=flat-square" alt="License">
     <img src="https://img.shields.io/badge/hardware-ESP8266%20(Wemos)-red?style=flat-square" alt="Hardware">
@@ -143,7 +143,7 @@ Bu komut `dist/` klasöründe **LuxEdge Setup X.X.X.exe** dosyasını oluşturur
 ### Build Çıktıları
 ```
 dist/
-├── LuxEdge Setup 1.2.1.exe    # NSIS Installer (dağıtılabilir)
+├── LuxEdge Setup 1.3.0.exe    # NSIS Installer (dağıtılabilir)
 ├── win-unpacked/              # Portable versiyon
 │   └── LuxEdge.exe
 └── ...
@@ -248,7 +248,13 @@ luxedge/
 
 ## 📝 Sürüm Geçmişi
 
-### v1.2.1 (Güncel)
+### v1.3.0 (Güncel)
+- ✅ **Canlı Bildirimler:** Arayüz üzerinden değiştirilen LED sayıları, Tarama Kalınlığı (Edge Width) ve İçeri Kaydırma (Edge Offset) verilerinin **uygulama yeniden başlatılmadan** canlı olarak backend'e yansıtılması sağlandı.
+- ✅ **Gelişmiş Görüntü Analizi:** Ekrandan alınan bölgesel renk oranlarında renk ortalaması hesaplaması gerçekçi tonları alacak şekilde optimize edildi.
+- ✅ **İçeri Kaydırma (Offset):** Tam olarak ekran kenarı yerine, kenardan biraz daha içerideki piksellerin izlenebilmesine olanak tanındı.
+- ✅ **Zombi İşlem Fix'i:** Uygulama sistem çekmecesinden (Tray Menu) veya Görev Çubuğundan kapatıldığında, arka planda çalışan Python sürecinin (`lush_backend.exe`) açık kalma sorunu çözüldü (Senkron Taskkill yordamı eklendi).
+
+### v1.2.1
 - ✅ Paketlenmiş uygulamada Python backend başlatma düzeltmesi
 - ✅ lush_backend.exe yeniden derlendi (güncel UDP PING/PONG)
 - ✅ Detaylı backend başlatma logları
