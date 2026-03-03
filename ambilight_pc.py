@@ -635,6 +635,61 @@ def check_startup():
 # EKRAN YAKALAMA
 # ============================================================
 
+def hex_to_rgb(hex_color):
+    hex_color = str(hex_color).lstrip('#')
+    try:
+        return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+    except:
+        return (255, 0, 0)
+
+def get_windows_accent_color():
+    try:
+        registry = winreg.ConnectRegistry(None, winreg.HKEY_CURRENT_USER)
+        key = winreg.OpenKey(registry, r"Software\Microsoft\Windows\DWM")
+        value, _ = winreg.QueryValueEx(key, "ColorizationColor")
+        winreg.CloseKey(key)
+        
+        # ColorizationColor genelde ARGB (AARRGGBB) formatındadır, bize RGB lazım
+        color_hex = f"{value:08x}"
+        if len(color_hex) == 8:
+            r = int(color_hex[2:4], 16)
+            g = int(color_hex[4:6], 16)
+            b = int(color_hex[6:8], 16)
+            return f"#{r:02x}{g:02x}{b:02x}"
+    except Exception:
+        pass
+    return "#ff0000" # fallback kırmızı
+
+def is_fullscreen():
+    if sys.platform != 'win32':
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd: return False
+        
+        # Avoid desktop matching
+        if hwnd == user32.GetDesktopWindow() or hwnd == user32.GetShellWindow():
+            return False
+            
+        rect = wintypes.RECT()
+        user32.GetWindowRect(hwnd, ctypes.byref(rect))
+        
+        screen_w = user32.GetSystemMetrics(0)
+        screen_h = user32.GetSystemMetrics(1)
+        
+        w = rect.right - rect.left
+        h = rect.bottom - rect.top
+        
+        # Gerçek tam ekran (YouTube, Oyunlar) monitör çözünürlüğüne eşittir.
+        # Maximize edilmiş (Tam ekran ama simge durumuna küçültülebilen) pencereler ekran sınırından taşar (w=1936, h=1096 gibi) 
+        # veya taskbar'ı hesaba kattığı için h < screen_h olur.
+        return (w == screen_w and h == screen_h and rect.top == 0 and rect.left == 0)
+    except Exception:
+        return False
+
 def average_color(img):
     """Bölgesel ortalama rengi hesaplar"""
     arr = np.array(img).reshape(-1, 3)
@@ -700,6 +755,10 @@ app_status = {
     "fps": 60,
     "edge_width": 20,
     "edge_offset": 0,
+    "idle_mode": False,
+    "idle_use_windows_color": False,
+    "idle_color": "#ff0000",
+    "idle_brightness": 50,
     "local_ip": "",
     "subnet": "",
     "packets_sent": 0,
@@ -1130,6 +1189,10 @@ def ambilight_worker(config):
     FPS = config.get("fps", 60)
     EDGE_WIDTH = config.get("edge_width", 20)
     EDGE_OFFSET = config.get("edge_offset", 0)
+    IDLE_MODE = config.get("idle_mode", False)
+    IDLE_USE_WINDOWS_COLOR = config.get("idle_use_windows_color", False)
+    IDLE_COLOR = config.get("idle_color", "#ff0000")
+    IDLE_BRIGHTNESS = config.get("idle_brightness", 50)
     
     TOTAL_LEDS = TOP_LEDS + BOTTOM_LEDS + LEFT_LEDS + RIGHT_LEDS
     
@@ -1146,6 +1209,10 @@ def ambilight_worker(config):
     update_status("fps", FPS)
     update_status("edge_width", EDGE_WIDTH)
     update_status("edge_offset", EDGE_OFFSET)
+    update_status("idle_mode", IDLE_MODE)
+    update_status("idle_use_windows_color", IDLE_USE_WINDOWS_COLOR)
+    update_status("idle_color", IDLE_COLOR)
+    update_status("idle_brightness", IDLE_BRIGHTNESS)
     update_status("running", True)
     update_status("uptime_start", time.time())
     update_status("connection", "bağlanıyor" if WEMOS_IP else "IP Bekleniyor...")
@@ -1192,13 +1259,21 @@ def ambilight_worker(config):
                     new_right = new_config.get("right_leds", RIGHT_LEDS)
                     new_width = new_config.get("edge_width", EDGE_WIDTH)
                     new_offset = new_config.get("edge_offset", EDGE_OFFSET)
+                    new_idle_mode = new_config.get("idle_mode", IDLE_MODE)
+                    new_idle_use_windows_color = new_config.get("idle_use_windows_color", IDLE_USE_WINDOWS_COLOR)
+                    new_idle_color = new_config.get("idle_color", IDLE_COLOR)
+                    new_idle_brightness = new_config.get("idle_brightness", IDLE_BRIGHTNESS)
                     
                     if (new_top != TOP_LEDS or new_bottom != BOTTOM_LEDS or 
                         new_left != LEFT_LEDS or new_right != RIGHT_LEDS or 
-                        new_width != EDGE_WIDTH or new_offset != EDGE_OFFSET):
+                        new_width != EDGE_WIDTH or new_offset != EDGE_OFFSET or
+                        new_idle_mode != IDLE_MODE or new_idle_color != IDLE_COLOR or new_idle_brightness != IDLE_BRIGHTNESS or
+                        new_idle_use_windows_color != IDLE_USE_WINDOWS_COLOR):
                         TOP_LEDS, BOTTOM_LEDS = new_top, new_bottom
                         LEFT_LEDS, RIGHT_LEDS = new_left, new_right
                         EDGE_WIDTH, EDGE_OFFSET = new_width, new_offset
+                        IDLE_MODE, IDLE_COLOR, IDLE_BRIGHTNESS = new_idle_mode, new_idle_color, new_idle_brightness
+                        IDLE_USE_WINDOWS_COLOR = new_idle_use_windows_color
                         TOTAL_LEDS = TOP_LEDS + BOTTOM_LEDS + LEFT_LEDS + RIGHT_LEDS
                         
                         update_status("top_leds", TOP_LEDS)
@@ -1208,7 +1283,11 @@ def ambilight_worker(config):
                         update_status("total_leds", TOTAL_LEDS)
                         update_status("edge_width", EDGE_WIDTH)
                         update_status("edge_offset", EDGE_OFFSET)
-                        print("✓ (Worker) LED / Kenar Konfigürasyonları Canlı Olarak Güncellendi.")
+                        update_status("idle_mode", IDLE_MODE)
+                        update_status("idle_use_windows_color", IDLE_USE_WINDOWS_COLOR)
+                        update_status("idle_color", IDLE_COLOR)
+                        update_status("idle_brightness", IDLE_BRIGHTNESS)
+                        print("✓ (Worker) LED / Kenar / Bekleme Modu Konfigürasyonları Canlı Olarak Güncellendi.")
                     
                     new_ip = new_config.get("wemos_ip", "")
                     if new_ip and new_ip != WEMOS_IP:
@@ -1232,11 +1311,25 @@ def ambilight_worker(config):
                 continue
 
             try:
-                colors = grab_edge_colors(TOP_LEDS, BOTTOM_LEDS, LEFT_LEDS, RIGHT_LEDS, EDGE_WIDTH, EDGE_OFFSET, sct)
                 data = bytearray()
-
-                for r, g, b in colors:
-                    data += bytes([r, g, b])
+                
+                if IDLE_MODE and not is_fullscreen():
+                    if IDLE_USE_WINDOWS_COLOR:
+                        current_color = get_windows_accent_color()
+                    else:
+                        current_color = IDLE_COLOR
+                        
+                    ir, ig, ib = hex_to_rgb(current_color)
+                    b_ratio = IDLE_BRIGHTNESS / 100.0
+                    r = int(ir * b_ratio)
+                    g = int(ig * b_ratio)
+                    b = int(ib * b_ratio)
+                    for _ in range(TOTAL_LEDS):
+                        data += bytes([r, g, b])
+                else:
+                    colors = grab_edge_colors(TOP_LEDS, BOTTOM_LEDS, LEFT_LEDS, RIGHT_LEDS, EDGE_WIDTH, EDGE_OFFSET, sct)
+                    for r, g, b in colors:
+                        data += bytes([r, g, b])
 
                 sock.sendto(data, (WEMOS_IP, WEMOS_PORT))
                 packets_sent += 1

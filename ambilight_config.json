@@ -8,5 +8,9 @@
     "right_leds": 20,
     "edge_width": 10,
     "led_offset": 0,
-    "edge_offset": 5
+    "edge_offset": 5,
+    "idle_mode": true,
+    "idle_color": "#ff0000",
+    "idle_brightness": 15,
+    "idle_use_windows_color": false
 }

@@ -674,6 +674,53 @@
                     </div>
                 </div>
 
+                <!-- Bekleme Modu (Sabit Renk) -->
+                <div class="card grid-full">
+                    <div class="card-header">
+                        <div class="card-title"><span>🎨</span> Bekleme Modu (Sabit Renk)</div>
+                    </div>
+                    <div style="display: flex; gap: 20px; flex-wrap: wrap; align-items: center;">
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <input type="checkbox" id="idle_mode"
+                                style="width: 18px; height: 18px; accent-color: var(--accent-color); cursor: pointer;">
+                            <label for="idle_mode" style="font-size: 14px; color: var(--text-primary); cursor: pointer;"
+                                title="Oyun veya video tam ekran olmadığında kullanılacak sabit renk modunu açar.">Bekleme
+                                Modunu Aktifleştir</label>
+                        </div>
+
+                        <div style="display: flex; align-items: center; gap: 10px; margin-left: 20px;">
+                            <input type="checkbox" id="idle_use_windows_color"
+                                style="width: 16px; height: 16px; accent-color: var(--accent-color); cursor: pointer;">
+                            <label for="idle_use_windows_color"
+                                style="font-size: 13px; color: var(--text-secondary); cursor: pointer;"
+                                title="Rengi otomatik olarak Windows'un ana tema rengi ile senkronize eder.">Windows
+                                Tema Rengini Kullan</label>
+                        </div>
+
+                        <div style="display: flex; align-items: center; gap: 10px; margin-left: 20px;">
+                            <label for="idle_color" style="font-size: 13px; color: var(--text-secondary);">Renk
+                                Seçimi:</label>
+                            <input type="color" id="idle_color" value="#ff0000"
+                                style="width: 40px; height: 30px; padding: 0; border: none; outline: none; background: none; cursor: pointer; border-radius: 4px;">
+                        </div>
+
+                        <div
+                            style="display: flex; align-items: center; gap: 10px; flex-grow: 1; max-width: 300px; margin-left: 20px;">
+                            <label for="idle_brightness"
+                                style="font-size: 13px; color: var(--text-secondary);">Parlaklık:</label>
+                            <input type="range" id="idle_brightness" min="0" max="100" value="50"
+                                style="flex-grow: 1; accent-color: var(--accent-color); cursor: pointer;">
+                            <span id="idle_brightness_val"
+                                style="font-size: 13px; color: var(--text-primary); width: 40px;">50%</span>
+                        </div>
+                    </div>
+                    <p style="font-size: 11px; color: var(--text-muted); margin-top: 15px;">
+                        💡 <b>Nasıl Çalışır?</b> Oyun veya uygulama tam ekrana geçtiğinde sistem otomatik pencereyi
+                        tarar (Ambilight). Tam ekranda çalışan bir şey yoksa yukarıda seçtiğiniz renk ve parlaklıkta
+                        sabit olarak yanar.
+                    </p>
+                </div>
+
                 <!-- Wemos Kontrol -->
                 <div class="card grid-full">
                     <div class="card-header">
@@ -743,8 +790,69 @@
             rightLeds: document.getElementById('right_leds'),
             edgeWidth: document.getElementById('edge_width'),
             edgeOffset: document.getElementById('edge_offset'),
-            manualIpInput: document.getElementById('manual-ip-input')
+            manualIpInput: document.getElementById('manual-ip-input'),
+
+            idleMode: document.getElementById('idle_mode'),
+            idleUseWindowsColor: document.getElementById('idle_use_windows_color'),
+            idleColor: document.getElementById('idle_color'),
+            idleBrightness: document.getElementById('idle_brightness'),
+            idleBrightnessVal: document.getElementById('idle_brightness_val')
         };
+
+        if (els.idleBrightness) {
+            els.idleBrightness.addEventListener('input', (e) => {
+                els.idleBrightnessVal.textContent = e.target.value + '%';
+            });
+        }
+
+        // --- Auto Save Logic ---
+        let autoSaveTimer = null;
+        let isEditingMode = false;
+        let editModeTimer = null;
+
+        function handleInputEdit(isIpField = false) {
+            isEditingMode = true;
+            clearTimeout(editModeTimer);
+            // 4 saniye boyunca arayüzü kilitle ki fetchStatus eski değeri yazmasın
+            editModeTimer = setTimeout(() => { isEditingMode = false; }, 4000);
+
+            clearTimeout(autoSaveTimer);
+            // Kullanıcı yazmayı bıraktıktan bir süre sonra otomatik kaydet
+            const delay = isIpField ? 1500 : 600;
+            autoSaveTimer = setTimeout(() => {
+                if (isIpField) {
+                    saveManualIp(true);
+                } else {
+                    saveConfig(true);
+                }
+            }, delay);
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const configInputs = [
+                els.topLeds, els.bottomLeds, els.leftLeds, els.rightLeds,
+                els.edgeWidth, els.edgeOffset, els.idleMode, els.idleUseWindowsColor, els.idleColor, els.idleBrightness
+            ];
+
+            configInputs.forEach(input => {
+                if (input) {
+                    input.addEventListener('input', () => handleInputEdit(false));
+                    input.addEventListener('change', () => handleInputEdit(false));
+                }
+            });
+
+            if (els.manualIpInput) {
+                els.manualIpInput.addEventListener('input', () => handleInputEdit(true));
+            }
+
+            // Disable color picker when windows color is checked
+            if (els.idleUseWindowsColor && els.idleColor) {
+                els.idleUseWindowsColor.addEventListener('change', (e) => {
+                    els.idleColor.disabled = e.target.checked;
+                    els.idleColor.style.opacity = e.target.checked ? '0.3' : '1';
+                });
+            }
+        });
 
         // --- Window Controls ---
         document.getElementById('btn-minimize').onclick = () => api.minimizeWindow();
@@ -799,16 +907,31 @@
             els.errorCount.textContent = status.errors || '0';
 
             // LED Bilgileri
-            // Not: Kullanıcı inputu düzenlerken sürekli update olursa yazamaz.
-            // Bu yüzden sadece odaklanılmamışsa güncelle
-            if (document.activeElement.tagName !== 'INPUT') {
+            // Kullanıcı giriş yaparken alanların üzerine eski bilgilerin yazılmasını önlüyoruz (isEditingMode)
+            if (!isEditingMode) {
                 els.totalLeds.textContent = status.total_leds || '0';
-                if (status.top_leds !== undefined) els.topLeds.value = status.top_leds;
-                if (status.bottom_leds !== undefined) els.bottomLeds.value = status.bottom_leds;
-                if (status.left_leds !== undefined) els.leftLeds.value = status.left_leds;
-                if (status.right_leds !== undefined) els.rightLeds.value = status.right_leds;
-                if (status.edge_width !== undefined) els.edgeWidth.value = status.edge_width;
-                if (status.edge_offset !== undefined) els.edgeOffset.value = status.edge_offset;
+                if (status.top_leds !== undefined && document.activeElement !== els.topLeds) els.topLeds.value = status.top_leds;
+                if (status.bottom_leds !== undefined && document.activeElement !== els.bottomLeds) els.bottomLeds.value = status.bottom_leds;
+                if (status.left_leds !== undefined && document.activeElement !== els.leftLeds) els.leftLeds.value = status.left_leds;
+                if (status.right_leds !== undefined && document.activeElement !== els.rightLeds) els.rightLeds.value = status.right_leds;
+                if (status.edge_width !== undefined && document.activeElement !== els.edgeWidth) els.edgeWidth.value = status.edge_width;
+                if (status.edge_offset !== undefined && document.activeElement !== els.edgeOffset) els.edgeOffset.value = status.edge_offset;
+
+                if (status.idle_mode !== undefined && els.idleMode) els.idleMode.checked = status.idle_mode;
+                if (status.idle_use_windows_color !== undefined && els.idleUseWindowsColor) {
+                    els.idleUseWindowsColor.checked = status.idle_use_windows_color;
+                    if (els.idleColor) {
+                        els.idleColor.disabled = status.idle_use_windows_color;
+                        els.idleColor.style.opacity = status.idle_use_windows_color ? '0.3' : '1';
+                    }
+                }
+                if (status.idle_color !== undefined && els.idleColor && document.activeElement !== els.idleColor) els.idleColor.value = status.idle_color;
+                if (status.idle_brightness !== undefined && els.idleBrightness) {
+                    if (document.activeElement !== els.idleBrightness) {
+                        els.idleBrightness.value = status.idle_brightness;
+                        if (els.idleBrightnessVal) els.idleBrightnessVal.textContent = status.idle_brightness + '%';
+                    }
+                }
             }
         }
 
@@ -836,8 +959,8 @@
             } catch (e) { showToast('Tarama hatası: Zaman aşımı olabilir.', 'error'); }
         }
 
-        async function saveConfig() {
-            showToast('Ayarlar kaydediliyor...', 'info');
+        async function saveConfig(silent = false) {
+            if (!silent) showToast('Ayarlar kaydediliyor...', 'info');
             try {
                 const config = {
                     top_leds: parseInt(els.topLeds.value) || 0,
@@ -845,16 +968,20 @@
                     left_leds: parseInt(els.leftLeds.value) || 0,
                     right_leds: parseInt(els.rightLeds.value) || 0,
                     edge_width: parseInt(els.edgeWidth.value) || 20,
-                    edge_offset: parseInt(els.edgeOffset.value) || 0
+                    edge_offset: parseInt(els.edgeOffset.value) || 0,
+                    idle_mode: els.idleMode && els.idleMode.checked,
+                    idle_use_windows_color: els.idleUseWindowsColor && els.idleUseWindowsColor.checked,
+                    idle_color: (els.idleColor && els.idleColor.value) || '#ff0000',
+                    idle_brightness: (els.idleBrightness && parseInt(els.idleBrightness.value)) || 50
                 };
 
                 await api.saveConfig(config);
-                showToast('Ayarlar başarıyla kaydedildi', 'success');
+                if (!silent) showToast('Ayarlar başarıyla kaydedildi', 'success');
                 // Kaydettikten sonra backend'in yeni durumu yansıtmasını bekle
                 setTimeout(fetchStatus, 500);
             } catch (e) {
                 console.error(e);
-                showToast('Kayıt başarısız', 'error');
+                if (!silent) showToast('Kayıt başarısız', 'error');
             }
         }
 
@@ -881,31 +1008,31 @@
             } catch (e) { showToast('Hata oluştu', 'error'); }
         }
 
-        async function saveManualIp() {
+        async function saveManualIp(silent = false) {
             const ip = els.manualIpInput.value.trim();
             if (!ip) {
-                showToast('❌ Lütfen bir IP adresi girin.', 'error');
+                if (!silent) showToast('❌ Lütfen bir IP adresi girin.', 'error');
                 return;
             }
             // Basit IP format kontrolü
             const ipRegex = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
             if (!ipRegex.test(ip)) {
-                showToast('❌ Geçersiz IP formatı. Örn: 33.33.33.8', 'error');
+                if (!silent) showToast('❌ Geçersiz IP formatı. Örn: 33.33.33.8', 'error');
                 return;
             }
-            showToast(`IP ${ip} olarak kaydediliyor...`, 'info');
+            if (!silent) showToast(`IP ${ip} olarak kaydediliyor...`, 'info');
             try {
                 const config = { wemos_ip: ip };
                 const result = await api.saveConfig(config);
                 if (result.success) {
-                    showToast(`✅ IP başarıyla ${ip} olarak kaydedildi!`, 'success');
+                    if (!silent) showToast(`✅ IP başarıyla ${ip} olarak kaydedildi!`, 'success');
                     setTimeout(fetchStatus, 1000);
                     setTimeout(fetchStatus, 4000);
                 } else {
-                    showToast('❌ Kayıt başarısız: ' + (result.message || ''), 'error');
+                    if (!silent) showToast('❌ Kayıt başarısız: ' + (result.message || ''), 'error');
                 }
             } catch (e) {
-                showToast('❌ Kayıt hatası oluştu', 'error');
+                if (!silent) showToast('❌ Kayıt hatası oluştu', 'error');
             }
         }
 
