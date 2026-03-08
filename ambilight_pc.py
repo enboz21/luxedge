@@ -1215,6 +1215,14 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
                 # Anında global bellek durumunu güncelle (UI senkronizasyon bug'ını çözer)
                 for k, v in new_config.items():
                     update_status(k, v)
+                
+                # Toplam led sayısını hemen hesaplayıp senkronize et ki arayüzde değer geri zıplamasın
+                c_top = current_config.get("top_leds", 0)
+                c_bot = current_config.get("bottom_leds", 0)
+                c_lft = current_config.get("left_leds", 0)
+                c_rgt = current_config.get("right_leds", 0)
+                update_status("total_leds", c_top + c_bot + c_lft + c_rgt)
+                
                 result = {"success": True, "message": "Konfigürasyon kaydedildi."}
             else:
                 result = {"success": False, "message": "Konfigürasyon kaydedilemedi."}
@@ -1569,12 +1577,23 @@ def ambilight_worker(config):
                         new_width != EDGE_WIDTH or new_offset != EDGE_OFFSET or
                         new_idle_mode != IDLE_MODE or new_idle_color != IDLE_COLOR or new_idle_brightness != IDLE_BRIGHTNESS or
                         new_idle_use_windows_color != IDLE_USE_WINDOWS_COLOR):
+                        old_total_leds = TOTAL_LEDS
+                        
                         TOP_LEDS, BOTTOM_LEDS = new_top, new_bottom
                         LEFT_LEDS, RIGHT_LEDS = new_left, new_right
                         EDGE_WIDTH, EDGE_OFFSET = new_width, new_offset
                         IDLE_MODE, IDLE_COLOR, IDLE_BRIGHTNESS = new_idle_mode, new_idle_color, new_idle_brightness
                         IDLE_USE_WINDOWS_COLOR = new_idle_use_windows_color
                         TOTAL_LEDS = TOP_LEDS + BOTTOM_LEDS + LEFT_LEDS + RIGHT_LEDS
+                        
+                        # EĞER LED SAYISI AZALDIYSA: Cihaz üzerindeki eski, arkada kalan LED'leri söndürmek için Blackout paketi at.
+                        if old_total_leds > TOTAL_LEDS and WEMOS_IP:
+                            try:
+                                blackout = bytearray([0] * (old_total_leds * 3))
+                                for _ in range(3):
+                                    sock.sendto(blackout, (WEMOS_IP, WEMOS_PORT))
+                                    time.sleep(0.05)
+                            except: pass
                         
                         update_status("top_leds", TOP_LEDS)
                         update_status("bottom_leds", BOTTOM_LEDS)

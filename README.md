@@ -4,7 +4,7 @@
     <strong>Monitör arkası LED aydınlatmasını otomatik olarak yöneten, Electron + Python tabanlı masaüstü uygulaması</strong>
   </p>
   <p align="center">
-    <img src="https://img.shields.io/badge/version-1.5.1-blue?style=flat-square" alt="Version">
+    <img src="https://img.shields.io/badge/version-1.5.2-blue?style=flat-square" alt="Version">
     <img src="https://img.shields.io/badge/platform-Windows%20|%20Linux-0078D6?style=flat-square&logo=windows&logoColor=white" alt="Platform">
     <img src="https://img.shields.io/badge/license-CC%20BY--NC%204.0-green?style=flat-square" alt="License">
     <img src="https://img.shields.io/badge/hardware-ESP8266%20(Wemos)-red?style=flat-square" alt="Hardware">
@@ -165,8 +165,8 @@ Bu script sırasıyla Python kodunu `lush_backend` olarak binary halinde derler 
 **Çıktılar (Son Kullanıcıya Verilecek Dosyalar):**
 Derleme sonrası `dist/` klasörü içerisinde iki ana dağıtım dosyası oluşur. Arkadaşınızın/Karşı tarafın makine tipine göre şu dosyaları flaşınıza kopyalayıp verebilirsiniz:
 
-- **`.AppImage` (Örn: `LuxEdge-1.5.1.AppImage`):** Tak ve çalıştır (Portable). Sistemde hiçbir şey kurulu olmadan sadece çift tıklayarak çalışır. 
-- **`.pacman` (Örn: `luxedge-1.5.1.pacman`):** Arch Linux kullanıcılarının sistemlerine resmi bir program gibi kurmaları içindir (`sudo pacman -U dosyaadi.pacman`).
+- **`.AppImage` (Örn: `LuxEdge-1.5.2.AppImage`):** Tak ve çalıştır (Portable). Sistemde hiçbir şey kurulu olmadan sadece çift tıklayarak çalışır. 
+- **`.pacman` (Örn: `luxedge-1.5.2.pacman`):** Arch Linux kullanıcılarının sistemlerine resmi bir program gibi kurmaları içindir (`sudo pacman -U dosyaadi.pacman`).
 - **`.deb`:** Ubuntu/Debian tabanlı sistemlere kalıcı kurmak içindir (`sudo dpkg -i dosyaadi.deb`).
 
 ---
@@ -268,7 +268,10 @@ luxedge/
 
 ## 📝 Sürüm Geçmişi
 
-### v1.5.1 (Güncel)
+### v1.5.2 (Güncel)
+- ✨ **Arayüz ve Wemos Senkronizasyon İyileştirmeleri:** Sadece belirli LED'leri kapattığınızda yaşanan hayalet LED sorunu giderildi; toplam LED sayısı değiştiğinde otomatik "Blackout (karartma)" paketi gönderilerek eski renklerin cihazda asılı kalması engellendi.
+
+### v1.5.1
 - ✨ **Linux Platform Desteği:** Sistem tamamen Linux uyumlu hale getirildi! Windows'a özel olan `ipconfig / netsh` gibi arka plan komutları Arch ve Ubuntu/Debian için `ip addr / nmcli` desteklerine kavuştu.
 - ✨ **Çoklu Monitör Fullscreen Desteği:** X11 (`ctypes`) protokolü entegre edilerek oyun/video hangi monitördeyse doğru bir şekilde tespit edilmeye başlandı. (Böylelikle yan ekranda YouTube izlerken ana ekranda oyun oynadığınızda sistem şaşırmaz).
 - ✨ **UDP Unicast Taraması:** Güvenlik duvarı/modem yüzünden Cihaz Bulma'yı engelleyen Broadcast kısıtlamalarına karşı yedek olarak *Unicast subnet sweep* eklendi.
