@@ -13,7 +13,8 @@ if sys.stdout.encoding != 'utf-8':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 if sys.stderr.encoding != 'utf-8':
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
-import winreg
+if sys.platform == 'win32':
+    import winreg
 import threading
 import urllib.request
 import urllib.parse
@@ -26,6 +27,18 @@ import struct
 
 # Windows'ta subprocess çağrılarında CMD penceresi açılmasını engelle
 CREATE_NO_WINDOW = 0x08000000 if sys.platform == 'win32' else 0
+
+def _subprocess_kwargs():
+    """Platform'a uygun subprocess parametreleri döndürür"""
+    kwargs = {
+        'capture_output': True,
+        'text': True,
+        'errors': 'ignore',
+        'stdin': subprocess.DEVNULL
+    }
+    if sys.platform == 'win32':
+        kwargs['creationflags'] = CREATE_NO_WINDOW
+    return kwargs
 
 try:
     import pystray
@@ -40,12 +53,33 @@ except ImportError:
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ambilight_config.json")
 
+import shutil
+
 def get_config_path():
-    """EXE çalışırken config dosyasının yolunu döndürür"""
+    """EXE çalışırken config dosyasının yolunu döndürür (Önceki ayarları kaybetmeden taşıyarak)"""
+    # 1. Eski sorunlu (Permission Denied alan) system dizini lokasyonu
     if getattr(sys, 'frozen', False):
-        return os.path.join(os.path.dirname(sys.executable), "ambilight_config.json")
+        old_path = os.path.join(os.path.dirname(sys.executable), "ambilight_config.json")
     else:
-        return CONFIG_FILE
+        old_path = CONFIG_FILE
+        
+    # 2. Yeni Kullanıcıya özel sorunsuz dizin
+    if sys.platform == 'win32':
+        config_dir = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'LuxEdge')
+    else:
+        config_dir = os.path.join(os.environ.get('XDG_CONFIG_HOME', os.path.join(os.path.expanduser('~'), '.config')), 'LuxEdge')
+    
+    os.makedirs(config_dir, exist_ok=True)
+    new_path = os.path.join(config_dir, "ambilight_config.json")
+    
+    # 3. Eğer kullanıcı eski ayarlarını taşıyorsa ve yeni dosya henüz yoksa, ESKİSİNİ KOPYALA ki ledleri sıfırlanmasın!
+    if not os.path.exists(new_path) and os.path.exists(old_path):
+        try:
+            shutil.copy2(old_path, new_path)
+        except Exception:
+            pass
+            
+    return new_path
 
 def load_config():
     """Konfigürasyon dosyasını yükler"""
@@ -97,38 +131,53 @@ def get_local_ip():
     except Exception:
         pass
 
-    try:
-        # Yöntem 2: ipconfig çıktısını analiz et
-        result = subprocess.run(
-            ['ipconfig'],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            creationflags=CREATE_NO_WINDOW,
-            errors='ignore',
-            stdin=subprocess.DEVNULL
-        )
-        lines = result.stdout.split('\n')
-        in_active_section = False
-        for line in lines:
-            # Kablosuz veya Ethernet adaptörü bölümünü bul
-            if 'Wireless LAN adapter' in line or 'Kablosuz LAN' in line:
-                in_active_section = True
-            elif 'Ethernet adapter' in line or 'Ethernet Bağdaştırıcısı' in line:
-                in_active_section = True
-            elif line.strip() == '' and in_active_section:
-                # Boş satır = bölüm bitiyor mu?
-                pass
-            elif in_active_section and ('IPv4' in line or 'IPv4' in line):
-                ip_match = re.search(r'(\d+\.\d+\.\d+\.\d+)', line)
-                if ip_match:
-                    found_ip = ip_match.group(1)
-                    if found_ip != '127.0.0.1':
-                        return found_ip
-            elif 'adapter' in line.lower() and ':' in line:
-                in_active_section = False
-    except Exception:
-        pass
+    if sys.platform == 'win32':
+        try:
+            # Yöntem 2 (Windows): ipconfig çıktısını analiz et
+            result = subprocess.run(
+                ['ipconfig'],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                creationflags=CREATE_NO_WINDOW,
+                errors='ignore',
+                stdin=subprocess.DEVNULL
+            )
+            lines = result.stdout.split('\n')
+            in_active_section = False
+            for line in lines:
+                if 'Wireless LAN adapter' in line or 'Kablosuz LAN' in line:
+                    in_active_section = True
+                elif 'Ethernet adapter' in line or 'Ethernet Bağdaştırıcısı' in line:
+                    in_active_section = True
+                elif line.strip() == '' and in_active_section:
+                    pass
+                elif in_active_section and ('IPv4' in line or 'IPv4' in line):
+                    ip_match = re.search(r'(\d+\.\d+\.\d+\.\d+)', line)
+                    if ip_match:
+                        found_ip = ip_match.group(1)
+                        if found_ip != '127.0.0.1':
+                            return found_ip
+                elif 'adapter' in line.lower() and ':' in line:
+                    in_active_section = False
+        except Exception:
+            pass
+    else:
+        try:
+            # Yöntem 2 (Linux): ip addr çıktısını analiz et
+            result = subprocess.run(
+                ['ip', '-4', 'addr', 'show'],
+                capture_output=True, text=True, timeout=10,
+                errors='ignore', stdin=subprocess.DEVNULL
+            )
+            for line in result.stdout.split('\n'):
+                line = line.strip()
+                if line.startswith('inet ') and '127.0.0.1' not in line:
+                    ip_match = re.search(r'inet\s+(\d+\.\d+\.\d+\.\d+)', line)
+                    if ip_match:
+                        return ip_match.group(1)
+        except Exception:
+            pass
 
     try:
         # Yöntem 3: hostname üzerinden
@@ -153,19 +202,31 @@ def get_all_active_ips():
     except:
         pass
 
-    try:
-        # ipconfig ile daha detaylı
-        # ipconfig ile daha detaylı
-        result = subprocess.run(['ipconfig'], capture_output=True, text=True, creationflags=CREATE_NO_WINDOW, errors='ignore', stdin=subprocess.DEVNULL)
-        for line in result.stdout.split('\n'):
-            if 'IPv4' in line or 'IPv4' in line:
-                match = re.search(r'(\d+\.\d+\.\d+\.\d+)', line)
+    if sys.platform == 'win32':
+        try:
+            # ipconfig ile daha detaylı (Windows)
+            result = subprocess.run(['ipconfig'], capture_output=True, text=True, creationflags=CREATE_NO_WINDOW, errors='ignore', stdin=subprocess.DEVNULL)
+            for line in result.stdout.split('\n'):
+                if 'IPv4' in line or 'IPv4' in line:
+                    match = re.search(r'(\d+\.\d+\.\d+\.\d+)', line)
+                    if match:
+                        ip = match.group(1)
+                        if not ip.startswith('127.'):
+                            ips.add(ip)
+        except:
+            pass
+    else:
+        try:
+            # ip addr ile daha detaylı (Linux)
+            result = subprocess.run(['ip', '-4', 'addr', 'show'], capture_output=True, text=True, errors='ignore', stdin=subprocess.DEVNULL)
+            for line in result.stdout.split('\n'):
+                match = re.search(r'inet\s+(\d+\.\d+\.\d+\.\d+)', line)
                 if match:
                     ip = match.group(1)
                     if not ip.startswith('127.'):
                         ips.add(ip)
-    except:
-        pass
+        except:
+            pass
         
     return list(ips)
 
@@ -179,30 +240,51 @@ def get_subnet_base(ip):
 
 def get_subnet_mask():
     """Ağ maskesini döndürür"""
-    try:
-        result = subprocess.run(
-            ['ipconfig'],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            creationflags=CREATE_NO_WINDOW,
-            errors='ignore',
-            stdin=subprocess.DEVNULL
-        )
-        lines = result.stdout.split('\n')
-        for i, line in enumerate(lines):
-            if 'Subnet Mask' in line or 'Alt Ağ Maskesi' in line:
-                mask_match = re.search(r'(\d+\.\d+\.\d+\.\d+)', line)
-                if mask_match:
-                    return mask_match.group(1)
-    except Exception:
-        pass
+    if sys.platform == 'win32':
+        try:
+            result = subprocess.run(
+                ['ipconfig'],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                creationflags=CREATE_NO_WINDOW,
+                errors='ignore',
+                stdin=subprocess.DEVNULL
+            )
+            lines = result.stdout.split('\n')
+            for i, line in enumerate(lines):
+                if 'Subnet Mask' in line or 'Alt Ağ Maskesi' in line:
+                    mask_match = re.search(r'(\d+\.\d+\.\d+\.\d+)', line)
+                    if mask_match:
+                        return mask_match.group(1)
+        except Exception:
+            pass
+    else:
+        try:
+            # Linux: ip addr çıktısından CIDR prefix'ini mask'a çevir
+            local_ip = get_local_ip()
+            if local_ip:
+                result = subprocess.run(
+                    ['ip', '-4', 'addr', 'show'],
+                    capture_output=True, text=True, timeout=10,
+                    errors='ignore', stdin=subprocess.DEVNULL
+                )
+                for line in result.stdout.split('\n'):
+                    if local_ip in line:
+                        cidr_match = re.search(r'/(\d+)', line)
+                        if cidr_match:
+                            prefix = int(cidr_match.group(1))
+                            mask = (0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF
+                            return f"{(mask >> 24) & 0xFF}.{(mask >> 16) & 0xFF}.{(mask >> 8) & 0xFF}.{mask & 0xFF}"
+        except Exception:
+            pass
     return '255.255.255.0'
 
 def find_wemos_ip_on_network(progress_callback=None):
     """
     Yönetici izni gerektirmeden Wemos'u bulur.
-    Akıllı Broadcast kullanır.
+    1) Akıllı UDP Broadcast dener
+    2) Bulamazsa HTTP ile subnet taraması yapar (fallback)
     """
     print("DEBUG: Wemos arama başlatıldı (Akıllı UDP)...")
     
@@ -220,7 +302,7 @@ def find_wemos_ip_on_network(progress_callback=None):
         broadcast_list.append(subnet_broadcast) # Yerel yayın (Daha garantidir)
         print(f"DEBUG: Hedef Broadcast Adresleri: {broadcast_list}")
 
-    # 2. UDP Soketi Hazırla
+    # --- YÖNTEM 1: UDP Broadcast ---
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -256,9 +338,10 @@ def find_wemos_ip_on_network(progress_callback=None):
                         else:
                             found_ip = addr[0] # Formatta IP yoksa gönderen IP'yi al
                             
-                        print(f"DEBUG: WEMOS BULUNDU! IP: {found_ip}")
+                        print(f"DEBUG: WEMOS BULUNDU (UDP)! IP: {found_ip}")
                         if progress_callback:
                             progress_callback(f"Bulundu: {found_ip}")
+                        sock.close()
                         return found_ip
                         
                 except socket.timeout:
@@ -270,6 +353,61 @@ def find_wemos_ip_on_network(progress_callback=None):
         sock.close()
     except Exception as e:
         print(f"Socket hatası: {e}")
+
+    # --- YÖNTEM 2: UDP Unicast Subnet Taraması (Fallback) ---
+    if not found_ip and local_ip:
+        print("DEBUG: UDP broadcast yanıt yok, unicast subnet taraması başlatılıyor...")
+        if progress_callback:
+            progress_callback("Broadcast yanıt yok, subnet taranıyor...")
+        
+        subnet_base = get_subnet_base(local_ip)
+        if subnet_base:
+            import concurrent.futures
+            
+            def check_wemos_udp_unicast(ip):
+                """Verilen IP'ye doğrudan UDP discovery paketi gönder"""
+                try:
+                    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    s.settimeout(0.5)
+                    s.sendto(b"AMBLIGHT_DISCOVERY", (ip, 7777))
+                    try:
+                        data, addr = s.recvfrom(1024)
+                        if b"AMBLIGHT_RESPONSE" in data:
+                            s.close()
+                            return ip
+                    except socket.timeout:
+                        pass
+                    s.close()
+                except Exception:
+                    pass
+                return None
+            
+            my_ip_last_octet = int(local_ip.split('.')[-1])
+            all_ips = [f"{subnet_base}.{i}" for i in range(1, 255) if i != my_ip_last_octet]
+            
+            # Config'deki kaydedilmiş IP'yi listeye en başa koy (hızlı bağlanma)
+            config = load_config()
+            if config and config.get('wemos_ip'):
+                saved_ip = config['wemos_ip']
+                if saved_ip in all_ips:
+                    all_ips.remove(saved_ip)
+                    all_ips.insert(0, saved_ip)
+            
+            try:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
+                    futures = {executor.submit(check_wemos_udp_unicast, ip): ip for ip in all_ips}
+                    for future in concurrent.futures.as_completed(futures, timeout=15):
+                        result_ip = future.result()
+                        if result_ip:
+                            found_ip = result_ip
+                            print(f"DEBUG: WEMOS BULUNDU (Unicast)! IP: {found_ip}")
+                            if progress_callback:
+                                progress_callback(f"Bulundu: {found_ip}")
+                            for f in futures:
+                                f.cancel()
+                            return found_ip
+            except Exception as e:
+                print(f"Unicast tarama hatası: {e}")
 
     return found_ip
 
@@ -333,73 +471,125 @@ def send_wifi_config_to_wemos(hotspot_ip, wifi_ssid, wifi_password, method='http
             return False, f"UDP hatası: {e}"
 
 def scan_available_wifi_networks():
-    """Windows'ta görünen Wi-Fi ağlarını tarar"""
-    try:
-        result = subprocess.run(
-            ['netsh', 'wlan', 'show', 'networks', 'mode=Bssid'],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            creationflags=CREATE_NO_WINDOW,
-            errors='ignore',
-            stdin=subprocess.DEVNULL
-        )
-        networks = []
-        current_ssid = None
-        for line in result.stdout.split('\n'):
-            line = line.strip()
-            if line.startswith('SSID'):
-                parts = line.split(':', 1)
-                if len(parts) > 1:
-                    current_ssid = parts[1].strip()
-                    if current_ssid and current_ssid not in networks:
-                        networks.append(current_ssid)
-        return networks
-    except Exception:
-        return []
+    """Görünen Wi-Fi ağlarını tarar"""
+    if sys.platform == 'win32':
+        try:
+            result = subprocess.run(
+                ['netsh', 'wlan', 'show', 'networks', 'mode=Bssid'],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                creationflags=CREATE_NO_WINDOW,
+                errors='ignore',
+                stdin=subprocess.DEVNULL
+            )
+            networks = []
+            for line in result.stdout.split('\n'):
+                line = line.strip()
+                if line.startswith('SSID'):
+                    parts = line.split(':', 1)
+                    if len(parts) > 1:
+                        current_ssid = parts[1].strip()
+                        if current_ssid and current_ssid not in networks:
+                            networks.append(current_ssid)
+            return networks
+        except Exception:
+            return []
+    else:
+        # Linux: nmcli ile Wi-Fi tarama
+        try:
+            result = subprocess.run(
+                ['nmcli', '-t', '-f', 'SSID', 'device', 'wifi', 'list', '--rescan', 'yes'],
+                capture_output=True, text=True, timeout=15,
+                errors='ignore', stdin=subprocess.DEVNULL
+            )
+            networks = []
+            for line in result.stdout.split('\n'):
+                ssid = line.strip()
+                if ssid and ssid not in networks:
+                    networks.append(ssid)
+            return networks
+        except Exception:
+            return []
 
 def find_wemos_hotspot():
     """Wemos hotspot'unu otomatik bulur"""
-    try:
-        result = subprocess.run(
-            ['netsh', 'wlan', 'show', 'networks', 'mode=Bssid'],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            creationflags=CREATE_NO_WINDOW,
-            errors='ignore',
-            stdin=subprocess.DEVNULL
-        )
-        wemos_keywords = ['wemos', 'ambilight', 'setup', 'config', 'esp']
-        for line in result.stdout.split('\n'):
-            line_lower = line.strip().lower()
-            for keyword in wemos_keywords:
-                if keyword in line_lower and 'ssid' in line_lower:
-                    ssid_match = re.search(r'SSID\s*\d+\s*:\s*(.+)', line, re.IGNORECASE)
-                    if ssid_match:
-                        return ssid_match.group(1).strip()
-        return None
-    except Exception:
-        return None
+    wemos_keywords = ['wemos', 'ambilight', 'setup', 'config', 'esp']
+    if sys.platform == 'win32':
+        try:
+            result = subprocess.run(
+                ['netsh', 'wlan', 'show', 'networks', 'mode=Bssid'],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                creationflags=CREATE_NO_WINDOW,
+                errors='ignore',
+                stdin=subprocess.DEVNULL
+            )
+            for line in result.stdout.split('\n'):
+                line_lower = line.strip().lower()
+                for keyword in wemos_keywords:
+                    if keyword in line_lower and 'ssid' in line_lower:
+                        ssid_match = re.search(r'SSID\s*\d+\s*:\s*(.+)', line, re.IGNORECASE)
+                        if ssid_match:
+                            return ssid_match.group(1).strip()
+            return None
+        except Exception:
+            return None
+    else:
+        # Linux: nmcli ile Wemos hotspot ara
+        try:
+            result = subprocess.run(
+                ['nmcli', '-t', '-f', 'SSID', 'device', 'wifi', 'list'],
+                capture_output=True, text=True, timeout=15,
+                errors='ignore', stdin=subprocess.DEVNULL
+            )
+            for line in result.stdout.split('\n'):
+                ssid = line.strip()
+                for keyword in wemos_keywords:
+                    if keyword in ssid.lower():
+                        return ssid
+            return None
+        except Exception:
+            return None
 
 def connect_to_wifi(ssid, password=None):
-    """Windows'ta belirli bir Wi-Fi ağına bağlanır"""
-    try:
-        if password:
-            result = subprocess.run(
-                ['netsh', 'wlan', 'connect', f'name={ssid}', f'key={password}'],
-                capture_output=True, text=True, timeout=30,
-                creationflags=CREATE_NO_WINDOW, errors='ignore', stdin=subprocess.DEVNULL
-            )
-        else:
-            result = subprocess.run(
-                ['netsh', 'wlan', 'connect', f'name={ssid}'],
-                capture_output=True, text=True, timeout=30,
-                creationflags=CREATE_NO_WINDOW, errors='ignore', stdin=subprocess.DEVNULL
-            )
-        return 'başarıyla bağlandı' in result.stdout.lower() or 'successfully' in result.stdout.lower()
-    except Exception:
-        return False
+    """Belirli bir Wi-Fi ağına bağlanır"""
+    if sys.platform == 'win32':
+        try:
+            if password:
+                result = subprocess.run(
+                    ['netsh', 'wlan', 'connect', f'name={ssid}', f'key={password}'],
+                    capture_output=True, text=True, timeout=30,
+                    creationflags=CREATE_NO_WINDOW, errors='ignore', stdin=subprocess.DEVNULL
+                )
+            else:
+                result = subprocess.run(
+                    ['netsh', 'wlan', 'connect', f'name={ssid}'],
+                    capture_output=True, text=True, timeout=30,
+                    creationflags=CREATE_NO_WINDOW, errors='ignore', stdin=subprocess.DEVNULL
+                )
+            return 'başarıyla bağlandı' in result.stdout.lower() or 'successfully' in result.stdout.lower()
+        except Exception:
+            return False
+    else:
+        # Linux: nmcli ile Wi-Fi bağlantısı
+        try:
+            if password:
+                result = subprocess.run(
+                    ['nmcli', 'device', 'wifi', 'connect', ssid, 'password', password],
+                    capture_output=True, text=True, timeout=30,
+                    errors='ignore', stdin=subprocess.DEVNULL
+                )
+            else:
+                result = subprocess.run(
+                    ['nmcli', 'device', 'wifi', 'connect', ssid],
+                    capture_output=True, text=True, timeout=30,
+                    errors='ignore', stdin=subprocess.DEVNULL
+                )
+            return result.returncode == 0
+        except Exception:
+            return False
 
 # ============================================================
 # KULLANICI GİRDİ FONKSİYONLARI
@@ -592,44 +782,6 @@ def first_time_setup():
         return None
 
 # ============================================================
-# WİNDOWS BAŞLANGIÇ YÖNETİMİ
-# ============================================================
-
-def add_to_startup():
-    """Uygulamayı Windows başlangıcına ekler"""
-    try:
-        exe_path = sys.executable if getattr(sys, 'frozen', False) else sys.argv[0]
-        exe_path = os.path.abspath(exe_path)
-        
-        key = winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
-            r"Software\Microsoft\Windows\CurrentVersion\Run",
-            0, winreg.KEY_SET_VALUE
-        )
-        winreg.SetValueEx(key, "AmbilightPC", 0, winreg.REG_SZ, exe_path)
-        winreg.CloseKey(key)
-        return True
-    except Exception as e:
-        print(f"[HATA] Windows başlangıcına eklenirken hata: {e}")
-        return False
-
-def check_startup():
-    """Uygulamanın başlangıçta çalışıp çalışmadığını kontrol eder"""
-    try:
-        key = winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
-            r"Software\Microsoft\Windows\CurrentVersion\Run",
-            0, winreg.KEY_READ
-        )
-        try:
-            winreg.QueryValueEx(key, "AmbilightPC")
-            winreg.CloseKey(key)
-            return True
-        except FileNotFoundError:
-            winreg.CloseKey(key)
-            return False
-    except Exception:
-        return False
 
 # ============================================================
 # EKRAN YAKALAMA
@@ -642,53 +794,207 @@ def hex_to_rgb(hex_color):
     except:
         return (255, 0, 0)
 
-def get_windows_accent_color():
+def get_system_accent_color():
+    """Sistem vurgu rengini döndürür (Windows/Linux)"""
+    if sys.platform == 'win32':
+        try:
+            registry = winreg.ConnectRegistry(None, winreg.HKEY_CURRENT_USER)
+            key = winreg.OpenKey(registry, r"Software\Microsoft\Windows\DWM")
+            value, _ = winreg.QueryValueEx(key, "ColorizationColor")
+            winreg.CloseKey(key)
+            
+            # ColorizationColor genelde ARGB (AARRGGBB) formatındadır, bize RGB lazım
+            color_hex = f"{value:08x}"
+            if len(color_hex) == 8:
+                r = int(color_hex[2:4], 16)
+                g = int(color_hex[4:6], 16)
+                b = int(color_hex[6:8], 16)
+                return f"#{r:02x}{g:02x}{b:02x}"
+        except Exception:
+            pass
+    else:
+        # Linux: GNOME/KDE accent color okumayı dene
+        try:
+            result = subprocess.run(
+                ['gsettings', 'get', 'org.gnome.desktop.interface', 'accent-color'],
+                capture_output=True, text=True, timeout=5,
+                errors='ignore', stdin=subprocess.DEVNULL
+            )
+            color_name = result.stdout.strip().strip("'")
+            # GNOME accent color isimleri
+            gnome_colors = {
+                'blue': '#3584e4', 'teal': '#2190a4', 'green': '#3a944a',
+                'yellow': '#c88800', 'orange': '#ed5b00', 'red': '#e62d42',
+                'pink': '#d56199', 'purple': '#9141ac', 'slate': '#6f8396'
+            }
+            if color_name in gnome_colors:
+                return gnome_colors[color_name]
+        except Exception:
+            pass
+    return "#ff0000"  # fallback kırmızı
+
+# Eski isimle uyumluluk
+get_windows_accent_color = get_system_accent_color
+
+# Linux fullscreen cache (60fps'de her frame'de subprocess çağırmamak için)
+_fullscreen_cache = {'value': False, 'time': 0}
+_FULLSCREEN_CACHE_TTL = 1.0  # 1 saniyede bir kontrol et
+
+# Linux X11 display (tek sefer aç, tekrar kullan)
+_x11_display = None
+_x11_lib = None
+
+def _get_x11_display():
+    """X11 display bağlantısını aç ve cache'le"""
+    global _x11_display, _x11_lib
+    if _x11_lib is None:
+        try:
+            import ctypes.util
+            x11_path = ctypes.util.find_library('X11')
+            if not x11_path:
+                return None, None
+            _x11_lib = ctypes.CDLL(x11_path)
+            
+            # Fonksiyon imzaları (segfault önleme)
+            _x11_lib.XOpenDisplay.restype = ctypes.c_void_p
+            _x11_lib.XOpenDisplay.argtypes = [ctypes.c_char_p]
+            _x11_lib.XDefaultRootWindow.restype = ctypes.c_ulong
+            _x11_lib.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
+            _x11_lib.XGetGeometry.restype = ctypes.c_int
+            _x11_lib.XGetGeometry.argtypes = [
+                ctypes.c_void_p, ctypes.c_ulong,
+                ctypes.POINTER(ctypes.c_ulong),
+                ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int),
+                ctypes.POINTER(ctypes.c_uint), ctypes.POINTER(ctypes.c_uint),
+                ctypes.POINTER(ctypes.c_uint), ctypes.POINTER(ctypes.c_uint)
+            ]
+            _x11_lib.XTranslateCoordinates.restype = ctypes.c_int
+            _x11_lib.XTranslateCoordinates.argtypes = [
+                ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong,
+                ctypes.c_int, ctypes.c_int,
+                ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int),
+                ctypes.POINTER(ctypes.c_ulong)
+            ]
+        except Exception:
+            _x11_lib = False  # Başarısız — tekrar deneme
+            return None, None
+    
+    if _x11_lib is False:
+        return None, None
+    
+    if _x11_display is None:
+        _x11_display = _x11_lib.XOpenDisplay(None)
+    
+    return _x11_lib, _x11_display
+
+def _get_window_root_position(window_id_hex):
+    """Pencerenin root (mutlak) X,Y koordinatlarını döndürür (ctypes X11)"""
+    import ctypes
+    xlib, display = _get_x11_display()
+    if not xlib or not display:
+        return None, None
+    
     try:
-        registry = winreg.ConnectRegistry(None, winreg.HKEY_CURRENT_USER)
-        key = winreg.OpenKey(registry, r"Software\Microsoft\Windows\DWM")
-        value, _ = winreg.QueryValueEx(key, "ColorizationColor")
-        winreg.CloseKey(key)
+        wid = int(window_id_hex, 16)
+        root = xlib.XDefaultRootWindow(display)
         
-        # ColorizationColor genelde ARGB (AARRGGBB) formatındadır, bize RGB lazım
-        color_hex = f"{value:08x}"
-        if len(color_hex) == 8:
-            r = int(color_hex[2:4], 16)
-            g = int(color_hex[4:6], 16)
-            b = int(color_hex[6:8], 16)
-            return f"#{r:02x}{g:02x}{b:02x}"
+        root_x = ctypes.c_int()
+        root_y = ctypes.c_int()
+        child_return = ctypes.c_ulong()
+        
+        xlib.XTranslateCoordinates(
+            display, wid, root,
+            0, 0,
+            ctypes.byref(root_x), ctypes.byref(root_y),
+            ctypes.byref(child_return)
+        )
+        return root_x.value, root_y.value
     except Exception:
-        pass
-    return "#ff0000" # fallback kırmızı
+        return None, None
+
+def _is_window_on_led_monitor(window_id_hex):
+    """Pencerenin LED monitöründe (mss monitors[1] = primary) olup olmadığını kontrol eder"""
+    try:
+        from mss import mss
+        with mss() as sct:
+            led_monitor = sct.monitors[1]  # Primary monitor = LED monitörü
+        
+        root_x, root_y = _get_window_root_position(window_id_hex)
+        if root_x is None:
+            return True  # Pozisyon alınamadıysa, varsayılan: True (eski davranış)
+        
+        # Pencere LED monitörünün x aralığında mı kontrol et
+        mon_left = led_monitor['left']
+        mon_right = mon_left + led_monitor['width']
+        
+        return mon_left <= root_x < mon_right
+    except Exception:
+        return True  # Hata durumunda varsayılan: True
 
 def is_fullscreen():
-    if sys.platform != 'win32':
-        return False
-    try:
-        import ctypes
-        from ctypes import wintypes
-        user32 = ctypes.windll.user32
-        hwnd = user32.GetForegroundWindow()
-        if not hwnd: return False
-        
-        # Avoid desktop matching
-        if hwnd == user32.GetDesktopWindow() or hwnd == user32.GetShellWindow():
-            return False
+    if sys.platform == 'win32':
+        try:
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.windll.user32
+            hwnd = user32.GetForegroundWindow()
+            if not hwnd: return False
             
-        rect = wintypes.RECT()
-        user32.GetWindowRect(hwnd, ctypes.byref(rect))
+            # Avoid desktop matching
+            if hwnd == user32.GetDesktopWindow() or hwnd == user32.GetShellWindow():
+                return False
+                
+            rect = wintypes.RECT()
+            user32.GetWindowRect(hwnd, ctypes.byref(rect))
+            
+            screen_w = user32.GetSystemMetrics(0)
+            screen_h = user32.GetSystemMetrics(1)
+            
+            w = rect.right - rect.left
+            h = rect.bottom - rect.top
+            
+            # Gerçek tam ekran (YouTube, Oyunlar) monitör çözünürlüğüne eşittir.
+            return (w == screen_w and h == screen_h and rect.top == 0 and rect.left == 0)
+        except Exception:
+            return False
+    else:
+        # Linux: xprop ile tam ekran kontrolü (X11) + çoklu monitör desteği
+        # Performans: Cache kullan, her frame'de subprocess çağırma
+        now = time.time()
+        if now - _fullscreen_cache['time'] < _FULLSCREEN_CACHE_TTL:
+            return _fullscreen_cache['value']
         
-        screen_w = user32.GetSystemMetrics(0)
-        screen_h = user32.GetSystemMetrics(1)
+        result_val = False
+        try:
+            # xprop -root ile aktif pencereyi bul (xdotool bağımlılığı yok)
+            result = subprocess.run(
+                ['xprop', '-root', '_NET_ACTIVE_WINDOW'],
+                capture_output=True, text=True, timeout=1,
+                errors='ignore', stdin=subprocess.DEVNULL
+            )
+            match = re.search(r'window id # (0x[0-9a-fA-F]+)', result.stdout)
+            if match:
+                window_id = match.group(1)
+                
+                # Pencere durumunu kontrol et
+                result2 = subprocess.run(
+                    ['xprop', '-id', window_id, '_NET_WM_STATE'],
+                    capture_output=True, text=True, timeout=1,
+                    errors='ignore', stdin=subprocess.DEVNULL
+                )
+                is_fs = '_NET_WM_STATE_FULLSCREEN' in result2.stdout
+                
+                if is_fs:
+                    # Çoklu monitör: fullscreen pencere LED monitöründe mi?
+                    result_val = _is_window_on_led_monitor(window_id)
+                else:
+                    result_val = False
+        except Exception:
+            pass
         
-        w = rect.right - rect.left
-        h = rect.bottom - rect.top
-        
-        # Gerçek tam ekran (YouTube, Oyunlar) monitör çözünürlüğüne eşittir.
-        # Maximize edilmiş (Tam ekran ama simge durumuna küçültülebilen) pencereler ekran sınırından taşar (w=1936, h=1096 gibi) 
-        # veya taskbar'ı hesaba kattığı için h < screen_h olur.
-        return (w == screen_w and h == screen_h and rect.top == 0 and rect.left == 0)
-    except Exception:
-        return False
+        _fullscreen_cache['value'] = result_val
+        _fullscreen_cache['time'] = now
+        return result_val
 
 def average_color(img):
     """Bölgesel ortalama rengi hesaplar"""
@@ -791,29 +1097,46 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
         """HTTP loglarını sustur (konsolu temiz tut)"""
         pass
     
+    def _safe_send_json(self, data):
+        """JSON yanıtını güvenli şekilde gönder (BrokenPipeError koruması)"""
+        try:
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(json.dumps(data, ensure_ascii=False).encode('utf-8'))
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass  # İstemci bağlantıyı kapattı, sorun değil
+    
     def do_GET(self):
-        if self.path == '/' or self.path == '/index.html':
-            self.serve_html()
-        elif self.path == '/api/status':
-            self.serve_status()
-        elif self.path == '/api/scan':
-            self.serve_scan()
-        else:
-            self.send_error(404)
+        try:
+            if self.path == '/' or self.path == '/index.html':
+                self.serve_html()
+            elif self.path == '/api/status':
+                self.serve_status()
+            elif self.path == '/api/scan':
+                self.serve_scan()
+            else:
+                self.send_error(404)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
     
     def do_POST(self):
-        if self.path == '/api/config':
-            self.handle_config_update()
-        elif self.path == '/api/restart':
-            self.handle_restart()
-        elif self.path == '/api/wemos/restart':
-            self.handle_wemos_restart()
-        elif self.path == '/api/wemos/sleep':
-            self.handle_wemos_sleep()
-        elif self.path == '/api/wemos/reset_wifi':
-            self.handle_wemos_reset_wifi()
-        else:
-            self.send_error(404)
+        try:
+            if self.path == '/api/config':
+                self.handle_config_update()
+            elif self.path == '/api/restart':
+                self.handle_restart()
+            elif self.path == '/api/wemos/restart':
+                self.handle_wemos_restart()
+            elif self.path == '/api/wemos/sleep':
+                self.handle_wemos_sleep()
+            elif self.path == '/api/wemos/reset_wifi':
+                self.handle_wemos_reset_wifi()
+            else:
+                self.send_error(404)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
     
     def serve_html(self):
         """Ana HTML sayfasını sun"""
@@ -846,11 +1169,7 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
         else:
             status['uptime'] = "00:00:00"
         
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json; charset=utf-8')
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.end_headers()
-        self.wfile.write(json.dumps(status, ensure_ascii=False).encode('utf-8'))
+        self._safe_send_json(status)
     
     def serve_scan(self):
         """Ağ taraması yap ve sonucu döndür"""
@@ -880,11 +1199,7 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
         except Exception as e:
             result["message"] = f"Tarama hatası: {str(e)}"
         
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json; charset=utf-8')
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.end_headers()
-        self.wfile.write(json.dumps(result, ensure_ascii=False).encode('utf-8'))
+        self._safe_send_json(result)
     
     def handle_config_update(self):
         """Konfigürasyon güncelleme"""
@@ -897,27 +1212,22 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
             current_config.update(new_config)
             
             if save_config(current_config):
-                result = {"success": True, "message": "Konfigürasyon kaydedildi. Yeniden başlatma gerekiyor."}
+                # Anında global bellek durumunu güncelle (UI senkronizasyon bug'ını çözer)
+                for k, v in new_config.items():
+                    update_status(k, v)
+                result = {"success": True, "message": "Konfigürasyon kaydedildi."}
             else:
                 result = {"success": False, "message": "Konfigürasyon kaydedilemedi."}
         except Exception as e:
             result = {"success": False, "message": f"Hata: {str(e)}"}
         
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json; charset=utf-8')
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.end_headers()
-        self.wfile.write(json.dumps(result, ensure_ascii=False).encode('utf-8'))
+        self._safe_send_json(result)
     
     def handle_restart(self):
         """Uygulamayı yeniden başlat"""
         result = {"success": True, "message": "Uygulama yeniden başlatılıyor..."}
         
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json; charset=utf-8')
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.end_headers()
-        self.wfile.write(json.dumps(result, ensure_ascii=False).encode('utf-8'))
+        self._safe_send_json(result)
         
         # Uygulamayı yeniden başlat (kısa bir gecikme ile)
         threading.Timer(1.0, restart_app).start()
@@ -932,11 +1242,7 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
         except Exception as e:
             result = {"success": False, "message": f"Wemos hatası: {str(e)}"}
             
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json; charset=utf-8')
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.end_headers()
-        self.wfile.write(json.dumps(result, ensure_ascii=False).encode('utf-8'))
+        self._safe_send_json(result)
 
     def handle_wemos_sleep(self):
         """Wemos uyku modunu değiştir"""
@@ -950,11 +1256,7 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
         except Exception as e:
             result = {"success": False, "message": f"Wemos hatası: {str(e)}"}
             
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json; charset=utf-8')
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.end_headers()
-        self.wfile.write(json.dumps(result, ensure_ascii=False).encode('utf-8'))
+        self._safe_send_json(result)
 
     def handle_wemos_reset_wifi(self):
         """Wemos Wi-Fi ayarlarını sıfırla"""
@@ -972,11 +1274,7 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
         except Exception as e:
             result = {"success": False, "message": f"Wemos iletişim hatası: {str(e)}"}
             
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json; charset=utf-8')
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.end_headers()
-        self.wfile.write(json.dumps(result, ensure_ascii=False).encode('utf-8'))
+        self._safe_send_json(result)
 
 def restart_app():
     """Uygulamayı yeniden başlat"""
@@ -1075,6 +1373,7 @@ def hide_console():
                 kernel32.FreeConsole()
         except Exception:
             pass
+    # Linux'ta konsol gizleme gerekli değil (Electron zaten arka planda çalıştırır)
 
 def show_console():
     """Console penceresini gösterir"""
@@ -1097,6 +1396,7 @@ def show_console():
                 user32.ShowWindow(hwnd, 1)
         except Exception:
             pass
+    # Linux'ta konsol gösterme gerekli değil
 
 # ============================================================
 # AMBILIGHT WORKER
@@ -1376,7 +1676,7 @@ def main():
     global running, ambilight_thread, icon
     
     print("\n" + "="*60)
-    print("  AMBILIGHT PC v2.0 - İyileştirilmiş Versiyon")
+    print("  AMBILIGHT PC v1.5.0 - Linux & Windows")
     print("="*60)
     
     # Konfigürasyonu yükle
@@ -1495,3 +1795,4 @@ if __name__ == "__main__":
             pass
     
     main()
+

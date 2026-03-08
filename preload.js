@@ -23,6 +23,10 @@ contextBridge.exposeInMainWorld('luxedge', {
     toggleSleep: () => ipcRenderer.invoke('wemos-sleep'),
     resetWemosWifi: () => ipcRenderer.invoke('wemos-reset-wifi'),
 
+    // Otomatik Başlatma
+    getAutoStart: () => ipcRenderer.invoke('get-autostart'),
+    setAutoStart: (enabled) => ipcRenderer.invoke('set-autostart', enabled),
+
     // Pencere Kontrolleri
     minimizeWindow: () => ipcRenderer.invoke('window-minimize'),
     maximizeWindow: () => ipcRenderer.invoke('window-maximize'),

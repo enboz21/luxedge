@@ -1,5 +1,5 @@
 {
-    "wemos_ip": "33.33.33.9",
+    "wemos_ip": "33.33.33.8",
     "wemos_port": 7777,
     "fps": 60,
     "top_leds": 34,

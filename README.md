@@ -4,8 +4,8 @@
     <strong>Monitör arkası LED aydınlatmasını otomatik olarak yöneten, Electron + Python tabanlı masaüstü uygulaması</strong>
   </p>
   <p align="center">
-    <img src="https://img.shields.io/badge/version-1.4.2-blue?style=flat-square" alt="Version">
-    <img src="https://img.shields.io/badge/platform-Windows-0078D6?style=flat-square&logo=windows" alt="Platform">
+    <img src="https://img.shields.io/badge/version-1.5.0-blue?style=flat-square" alt="Version">
+    <img src="https://img.shields.io/badge/platform-Windows%20|%20Linux-0078D6?style=flat-square&logo=windows&logoColor=white" alt="Platform">
     <img src="https://img.shields.io/badge/license-CC%20BY--NC%204.0-green?style=flat-square" alt="License">
     <img src="https://img.shields.io/badge/hardware-ESP8266%20(Wemos)-red?style=flat-square" alt="Hardware">
   </p>
@@ -79,9 +79,9 @@
 
 ## 💻 Yazılım Gereksinimleri
 
-- **İşletim Sistemi:** Windows 10/11
+- **İşletim Sistemi:** Windows 10/11 veya Linux (Ubuntu/Debian, Arch Linux, vb.)
 - **Node.js:** v18 veya üstü
-- **Python:** 3.10 veya üstü
+- **Python:** 3.10 veya üstü (Linux için `python3` ve `pip` yüklü olmalı)
 - **Python Kütüphaneleri:** `numpy`, `mss`, `Pillow`, `pystray`
 
 ---
@@ -120,35 +120,54 @@ npm start
 
 ---
 
-## 🔨 Derleme (Build)
+## 🔨 Derleme & Paketleme (Build)
 
-Kurulum dosyası (installer) oluşturmak için:
+Uygulamanın çalıştırılabilir ve dağıtılabilir halini (kurulum dosyası) oluşturmak için aşağıdaki adımları takip edin:
 
-### 1. Python Backend'i EXE'ye Çevirin
-Python backend'i `lush_backend.exe` olarak derlemeniz gerekir:
+### 🪟 Windows İçin Derleme
+
+**1. Python Backend'i EXE'ye Çevirin:**
+Windows'ta Python kısmını bağımsız bir `lush_backend.exe` olarak derlemeniz gerekir:
 ```bash
 pip install pyinstaller
 python -m PyInstaller --onefile --noconsole --name lush_backend ambilight_pc.py
 copy dist\lush_backend.exe lush_backend.exe
 ```
 
-### 2. Electron Installer Oluşturun
+**2. Electron Installer Oluşturun:**
 ```bash
 npm run dist
 ```
+Bu işlem sonunda `dist/` klasörü içinde arkadaşınıza doğrudan gönderebileceğiniz **`LuxEdge Setup X.X.X.exe`** NSIS Kurulum dosyası oluşacaktır.
 
-Bu komut `dist/` klasöründe **LuxEdge Setup X.X.X.exe** dosyasını oluşturur.
+> ⚠️ **Not:** Windows'ta code signing hatası alırsanız, `package.json`'da `"signAndEditExecutable": false` ayarının yapılı olduğundan emin olun.
 
-> ⚠️ **Not:** Windows'ta code signing hatası alırsanız, `package.json`'da `"signAndEditExecutable": false` ayarlayın.
+---
 
-### Build Çıktıları
+### 🐧 Linux İçin Derleme
+
+Linux ortamında (Arch, Ubuntu vb.) derleme yapmak için `.venv` (sanal ortam) oluşturduğunuzdan emin olun ve ardından tek bir script ile tüm işlemi bitirin:
+
+**1. PyInstaller'ı Sanal Ortamınıza Kurun:**
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install pyinstaller
 ```
-dist/
-├── LuxEdge Setup 1.4.2.exe    # NSIS Installer (dağıtılabilir)
-├── win-unpacked/              # Portable versiyon
-│   └── LuxEdge.exe
-└── ...
+
+**2. Derleme Betiğini Çalıştırın:**
+```bash
+./build-linux.sh
 ```
+
+Bu script sırasıyla Python kodunu `lush_backend` olarak binary halinde derler ve Electron ile uygulamayı paketler. 
+
+**Çıktılar (Son Kullanıcıya Verilecek Dosyalar):**
+Derleme sonrası `dist/` klasörü içerisinde iki ana dağıtım dosyası oluşur. Arkadaşınızın/Karşı tarafın makine tipine göre şu dosyaları flaşınıza kopyalayıp verebilirsiniz:
+
+- **`.AppImage` (Örn: `LuxEdge-1.5.0.AppImage`):** Tak ve çalıştır (Portable). Sistemde hiçbir şey kurulu olmadan sadece çift tıklayarak çalışır. 
+- **`.pacman` (Örn: `luxedge-1.5.0.pacman`):** Arch Linux kullanıcılarının sistemlerine resmi bir program gibi kurmaları içindir (`sudo pacman -U dosyaadi.pacman`).
+- **`.deb`:** Ubuntu/Debian tabanlı sistemlere kalıcı kurmak içindir (`sudo dpkg -i dosyaadi.deb`).
 
 ---
 
@@ -249,7 +268,15 @@ luxedge/
 
 ## 📝 Sürüm Geçmişi
 
-### v1.4.2 (Güncel)
+### v1.5.0 (Güncel)
+- ✨ **Linux Platform Desteği:** Sistem tamamen Linux uyumlu hale getirildi! Windows'a özel olan `ipconfig / netsh` gibi arka plan komutları Arch ve Ubuntu/Debian için `ip addr / nmcli` desteklerine kavuştu.
+- ✨ **Çoklu Monitör Fullscreen Desteği:** X11 (`ctypes`) protokolü entegre edilerek oyun/video hangi monitördeyse doğru bir şekilde tespit edilmeye başlandı. (Böylelikle yan ekranda YouTube izlerken ana ekranda oyun oynadığınızda sistem şaşırmaz).
+- ✨ **UDP Unicast Taraması:** Güvenlik duvarı/modem yüzünden Cihaz Bulma'yı engelleyen Broadcast kısıtlamalarına karşı yedek olarak *Unicast subnet sweep* eklendi.
+- ✨ **Linux Paketlemeleri & Betikler:** Arch Linux için `.pacman` ve evrensel kullanım için `.AppImage` build mimarisi `.venv` senkronizasyonuna eklendi (`build-linux.sh`).
+- ✨ **Otomatik Başlat Yönetimi:** Arayüz üzerinden Windows ve Linux Startup'u (Otomatik Başlangıç) yönetimi direkt IPC mekanizmalarına devredildi (Electron UI Toggle eklendi).
+- ✨ GNOME ve KDE ortamlarından "Accent Color" Windows uyumluluğuna dâhil edildi.
+
+### v1.4.2
 - ✅ **Bekleme (Idle) Modu:** Monitörde oyun/video gibi gerçek bir tam ekran uygulama çalışmadığında LED'lerin sabit bir renkte (kullanıcının seçtiği) yanmasını sağlayan özellik eklendi.
 - ✅ **Windows Tema Rengi Senkronizasyonu:** Bekleme modundayken, eğer istenirse rengin otomatik olarak o anki "Windows Ana Tema Rengi" ile eşzamanlı olması sağlandı.
 - ✅ **Gecikmeli Otomatik Kayıt:** Her ayar değiştiğinde kullanıcıyı rahatsız etmeden arka planda debounce timer ile (0.6 - 1.5 saniye gecikmeli) ayarları kaydeden sessiz "Auto-Save" mekanizması eklendi.

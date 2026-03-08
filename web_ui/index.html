@@ -501,6 +501,56 @@
                 opacity: 1;
             }
         }
+
+        /* Toggle Switch */
+        .toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 48px;
+            height: 26px;
+            flex-shrink: 0;
+        }
+
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: var(--bg-card-hover);
+            border: 1px solid var(--border-color);
+            border-radius: 26px;
+            transition: 0.3s;
+        }
+
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 20px;
+            width: 20px;
+            left: 2px;
+            bottom: 2px;
+            background-color: var(--text-secondary);
+            border-radius: 50%;
+            transition: 0.3s;
+        }
+
+        .toggle-switch input:checked+.toggle-slider {
+            background-color: var(--success-color);
+            border-color: var(--success-color);
+        }
+
+        .toggle-switch input:checked+.toggle-slider:before {
+            transform: translateX(22px);
+            background-color: white;
+        }
     </style>
 </head>
 
@@ -559,7 +609,7 @@
                     </a>
                 </div>
                 <div style="font-size: 11px; color: var(--text-muted); margin-top: 15px; text-align: center;">
-                    Versiyon 1.0.0
+                    Versiyon 1.5.0
                 </div>
             </div>
         </div>
@@ -759,6 +809,29 @@
                     </div>
                 </div>
 
+                <!-- Sistem Ayarları -->
+                <div class="card grid-full">
+                    <div class="card-header">
+                        <div class="card-title"><span>⚙️</span> Sistem Ayarları</div>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 15px;">
+                        <label class="toggle-switch"
+                            title="Bilgisayar açıldığında LuxEdge'i otomatik olarak başlatır. Sadece Electron uygulaması başlar, backend otomatik başlatılır.">
+                            <input type="checkbox" id="autostart_toggle">
+                            <span class="toggle-slider"></span>
+                        </label>
+                        <div>
+                            <label for="autostart_toggle"
+                                style="font-size: 14px; color: var(--text-primary); cursor: pointer;">
+                                Bilgisayar Açıldığında Otomatik Başlat
+                            </label>
+                            <p style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">
+                                Sistem başlangıcında LuxEdge otomatik olarak açılır ve Ambilight'ı başlatır.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
             </div> <!-- End Grid -->
 
         </div> <!-- End Main Content -->
@@ -796,7 +869,8 @@
             idleUseWindowsColor: document.getElementById('idle_use_windows_color'),
             idleColor: document.getElementById('idle_color'),
             idleBrightness: document.getElementById('idle_brightness'),
-            idleBrightnessVal: document.getElementById('idle_brightness_val')
+            idleBrightnessVal: document.getElementById('idle_brightness_val'),
+            autostartToggle: document.getElementById('autostart_toggle')
         };
 
         if (els.idleBrightness) {
@@ -850,6 +924,31 @@
                 els.idleUseWindowsColor.addEventListener('change', (e) => {
                     els.idleColor.disabled = e.target.checked;
                     els.idleColor.style.opacity = e.target.checked ? '0.3' : '1';
+                });
+            }
+
+            // Otomatik başlatma toggle
+            if (els.autostartToggle && api.getAutoStart) {
+                // Mevcut durumu yükle
+                api.getAutoStart().then(result => {
+                    els.autostartToggle.checked = result.enabled;
+                }).catch(() => { });
+
+                // Toggle değiştiğinde kaydet
+                els.autostartToggle.addEventListener('change', async (e) => {
+                    const enabled = e.target.checked;
+                    try {
+                        const result = await api.setAutoStart(enabled);
+                        if (result.success) {
+                            showToast(`Otomatik başlatma ${enabled ? 'açıldı ✅' : 'kapatıldı ❌'}`, 'success');
+                        } else {
+                            showToast('Ayar kaydedilemedi: ' + (result.message || ''), 'error');
+                            e.target.checked = !enabled; // Geri al
+                        }
+                    } catch (err) {
+                        showToast('Ayar kaydedilemedi', 'error');
+                        e.target.checked = !enabled;
+                    }
                 });
             }
         });
@@ -916,22 +1015,24 @@
                 if (status.right_leds !== undefined && document.activeElement !== els.rightLeds) els.rightLeds.value = status.right_leds;
                 if (status.edge_width !== undefined && document.activeElement !== els.edgeWidth) els.edgeWidth.value = status.edge_width;
                 if (status.edge_offset !== undefined && document.activeElement !== els.edgeOffset) els.edgeOffset.value = status.edge_offset;
+            }
 
-                if (status.idle_mode !== undefined && els.idleMode) els.idleMode.checked = status.idle_mode;
-                if (status.idle_use_windows_color !== undefined && els.idleUseWindowsColor) {
-                    els.idleUseWindowsColor.checked = status.idle_use_windows_color;
-                    if (els.idleColor) {
-                        els.idleColor.disabled = status.idle_use_windows_color;
-                        els.idleColor.style.opacity = status.idle_use_windows_color ? '0.3' : '1';
-                    }
+            // Checkbox ve renk seçici gibi alanlarda isEditingMode yetersiz kalabilir, bunlara doğrudan müdahale edelim
+            if (status.idle_mode !== undefined && els.idleMode && document.activeElement !== els.idleMode && !isEditingMode) els.idleMode.checked = status.idle_mode;
+            
+            if (status.idle_use_windows_color !== undefined && els.idleUseWindowsColor && document.activeElement !== els.idleUseWindowsColor && !isEditingMode) {
+                els.idleUseWindowsColor.checked = status.idle_use_windows_color;
+                if (els.idleColor) {
+                    els.idleColor.disabled = status.idle_use_windows_color;
+                    els.idleColor.style.opacity = status.idle_use_windows_color ? '0.3' : '1';
                 }
-                if (status.idle_color !== undefined && els.idleColor && document.activeElement !== els.idleColor) els.idleColor.value = status.idle_color;
-                if (status.idle_brightness !== undefined && els.idleBrightness) {
-                    if (document.activeElement !== els.idleBrightness) {
-                        els.idleBrightness.value = status.idle_brightness;
-                        if (els.idleBrightnessVal) els.idleBrightnessVal.textContent = status.idle_brightness + '%';
-                    }
-                }
+            }
+            
+            if (status.idle_color !== undefined && els.idleColor && document.activeElement !== els.idleColor && !isEditingMode) els.idleColor.value = status.idle_color;
+            
+            if (status.idle_brightness !== undefined && els.idleBrightness && document.activeElement !== els.idleBrightness && !isEditingMode) {
+                els.idleBrightness.value = status.idle_brightness;
+                if (els.idleBrightnessVal) els.idleBrightnessVal.textContent = status.idle_brightness + '%';
             }
         }
 

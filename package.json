@@ -1,7 +1,11 @@
 {
     "name": "luxedge",
-    "version": "1.4.2",
+    "version": "1.5.0",
     "description": "LuxEdge - DIY Ambilight System for Monitor Backlighting",
+    "author": {
+        "name": "enboz",
+        "email": "enesb33@outlook.com"
+    },
     "main": "main.js",
     "scripts": {
         "start": "node launcher.js",
@@ -22,6 +26,10 @@
             {
                 "from": "lush_backend.exe",
                 "to": "lush_backend.exe"
+            },
+            {
+                "from": "lush_backend",
+                "to": "lush_backend"
             },
             {
                 "from": "ambilight_pc.py",
@@ -50,6 +58,15 @@
         "win": {
             "target": "nsis",
             "signAndEditExecutable": false
+        },
+        "linux": {
+            "target": [
+                "AppImage",
+                "pacman",
+                "deb"
+            ],
+            "category": "Utility",
+            "icon": null
         }
     },
     "devDependencies": {
