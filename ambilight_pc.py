@@ -836,9 +836,9 @@ def get_system_accent_color():
 # Eski isimle uyumluluk
 get_windows_accent_color = get_system_accent_color
 
-# Linux fullscreen cache (60fps'de her frame'de subprocess çağırmamak için)
+# Fullscreen cache (60fps'de her frame'de ağır kontroller yapmamak için - Windows ve Linux)
 _fullscreen_cache = {'value': False, 'time': 0}
-_FULLSCREEN_CACHE_TTL = 1.0  # 1 saniyede bir kontrol et
+_FULLSCREEN_CACHE_TTL = 0.5  # 500ms'de bir kontrol et (2. ekrana tıklama anında hızlı tepki)
 
 # Linux X11 display (tek sefer aç, tekrar kullan)
 _x11_display = None
@@ -931,30 +931,81 @@ def _is_window_on_led_monitor(window_id_hex):
     except Exception:
         return True  # Hata durumunda varsayılan: True
 
+def _is_window_fullscreen_on_primary_win32(hwnd):
+    """Windows: Verilen pencerenin birincil monitörde tam ekran olup olmadığını kontrol eder"""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        
+        # Desktop ve Shell pencerelerini atla
+        if hwnd == user32.GetDesktopWindow() or hwnd == user32.GetShellWindow():
+            return False
+        
+        # Görünür olmayan pencereleri atla
+        if not user32.IsWindowVisible(hwnd):
+            return False
+        
+        # DWM Cloaked pencerelerini atla (örn: "Windows Giriş Deneyimi" gibi
+        # görünmez ama ekranı kaplayan system pencereleri)
+        try:
+            dwmapi = ctypes.windll.dwmapi
+            cloaked = ctypes.c_int(0)
+            DWMWA_CLOAKED = 14
+            hr = dwmapi.DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, ctypes.byref(cloaked), ctypes.sizeof(cloaked))
+            if hr == 0 and cloaked.value != 0:
+                return False  # Cloaked pencere, gerçek fullscreen değil
+        except Exception:
+            pass  # dwmapi yoksa devam et
+        
+        rect = wintypes.RECT()
+        user32.GetWindowRect(hwnd, ctypes.byref(rect))
+        
+        screen_w = user32.GetSystemMetrics(0)
+        screen_h = user32.GetSystemMetrics(1)
+        
+        w = rect.right - rect.left
+        h = rect.bottom - rect.top
+        
+        # Birincil monitörde tam ekran kontrolü
+        return (w == screen_w and h == screen_h and rect.top == 0 and rect.left == 0)
+    except Exception:
+        return False
+
 def is_fullscreen():
     if sys.platform == 'win32':
         try:
             import ctypes
             from ctypes import wintypes
             user32 = ctypes.windll.user32
+            
+            # Önce foreground window'u kontrol et (en hızlı yol, her frame'de çalışabilir)
             hwnd = user32.GetForegroundWindow()
-            if not hwnd: return False
+            if hwnd and _is_window_fullscreen_on_primary_win32(hwnd):
+                _fullscreen_cache['value'] = True
+                _fullscreen_cache['time'] = time.time()
+                return True
             
-            # Avoid desktop matching
-            if hwnd == user32.GetDesktopWindow() or hwnd == user32.GetShellWindow():
-                return False
-                
-            rect = wintypes.RECT()
-            user32.GetWindowRect(hwnd, ctypes.byref(rect))
+            # Foreground fullscreen değilse, cache'li EnumWindows taraması yap
+            # (2. ekrana tıklanmışsa, 1. ekranda hala fullscreen pencere olabilir)
+            now = time.time()
+            if now - _fullscreen_cache['time'] < _FULLSCREEN_CACHE_TTL:
+                return _fullscreen_cache['value']
             
-            screen_w = user32.GetSystemMetrics(0)
-            screen_h = user32.GetSystemMetrics(1)
+            found_fullscreen = [False]
             
-            w = rect.right - rect.left
-            h = rect.bottom - rect.top
+            WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
             
-            # Gerçek tam ekran (YouTube, Oyunlar) monitör çözünürlüğüne eşittir.
-            return (w == screen_w and h == screen_h and rect.top == 0 and rect.left == 0)
+            def enum_callback(hwnd, lParam):
+                if _is_window_fullscreen_on_primary_win32(hwnd):
+                    found_fullscreen[0] = True
+                    return False  # Taramayı durdur, bulduk
+                return True  # Devam et
+            
+            user32.EnumWindows(WNDENUMPROC(enum_callback), 0)
+            _fullscreen_cache['value'] = found_fullscreen[0]
+            _fullscreen_cache['time'] = now
+            return found_fullscreen[0]
         except Exception:
             return False
     else:
@@ -966,7 +1017,7 @@ def is_fullscreen():
         
         result_val = False
         try:
-            # xprop -root ile aktif pencereyi bul (xdotool bağımlılığı yok)
+            # Önce aktif pencereyi kontrol et (hızlı yol)
             result = subprocess.run(
                 ['xprop', '-root', '_NET_ACTIVE_WINDOW'],
                 capture_output=True, text=True, timeout=1,
@@ -975,20 +1026,37 @@ def is_fullscreen():
             match = re.search(r'window id # (0x[0-9a-fA-F]+)', result.stdout)
             if match:
                 window_id = match.group(1)
-                
-                # Pencere durumunu kontrol et
                 result2 = subprocess.run(
                     ['xprop', '-id', window_id, '_NET_WM_STATE'],
                     capture_output=True, text=True, timeout=1,
                     errors='ignore', stdin=subprocess.DEVNULL
                 )
-                is_fs = '_NET_WM_STATE_FULLSCREEN' in result2.stdout
-                
-                if is_fs:
-                    # Çoklu monitör: fullscreen pencere LED monitöründe mi?
-                    result_val = _is_window_on_led_monitor(window_id)
-                else:
-                    result_val = False
+                if '_NET_WM_STATE_FULLSCREEN' in result2.stdout:
+                    if _is_window_on_led_monitor(window_id):
+                        result_val = True
+            
+            # Aktif pencere fullscreen değilse, TÜM pencereleri tara
+            # (kullanıcı 2. ekrana tıklamış olabilir)
+            if not result_val:
+                result_all = subprocess.run(
+                    ['xprop', '-root', '_NET_CLIENT_LIST'],
+                    capture_output=True, text=True, timeout=1,
+                    errors='ignore', stdin=subprocess.DEVNULL
+                )
+                window_ids = re.findall(r'(0x[0-9a-fA-F]+)', result_all.stdout)
+                for wid in window_ids:
+                    try:
+                        res = subprocess.run(
+                            ['xprop', '-id', wid, '_NET_WM_STATE'],
+                            capture_output=True, text=True, timeout=0.5,
+                            errors='ignore', stdin=subprocess.DEVNULL
+                        )
+                        if '_NET_WM_STATE_FULLSCREEN' in res.stdout:
+                            if _is_window_on_led_monitor(wid):
+                                result_val = True
+                                break
+                    except Exception:
+                        continue
         except Exception:
             pass
         
@@ -1695,7 +1763,7 @@ def main():
     global running, ambilight_thread, icon
     
     print("\n" + "="*60)
-    print("  AMBILIGHT PC v1.5.0 - Linux & Windows")
+    print("  AMBILIGHT PC v1.5.3 - Linux & Windows")
     print("="*60)
     
     # Konfigürasyonu yükle
