@@ -1763,7 +1763,7 @@ def main():
     global running, ambilight_thread, icon
     
     print("\n" + "="*60)
-    print("  AMBILIGHT PC v1.5.3 - Linux & Windows")
+    print("  AMBILIGHT PC v1.5.4 - Linux & Windows")
     print("="*60)
     
     # Konfigürasyonu yükle

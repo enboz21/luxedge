@@ -5,7 +5,7 @@
 #include <EEPROM.h>
 #include <DNSServer.h> // --- EKLENDİ: Captive Portal için gerekli kütüphane ---
 
-#define LED_PIN   4        // ESP-01 GPIO2
+#define LED_PIN   3        // RX pin (GPIO3) - I2C'den bağımsız, toprağa uzak, güvenli
 #define LED_COUNT 74       // 34 + 0 + 20 + 20 (config ile eşleşmeli)
 #define UDP_PORT  7777
 #define DNS_PORT  53       // --- EKLENDİ: DNS Portu ---
@@ -94,7 +94,15 @@ void loadWiFiCredentials() {
 
 void startHotspot() {
   Serial.println("Hotspot modu başlatılıyor...");
-  
+
+  // Önce eski bağlantıları ve soketleri temizle
+  Udp.stop();
+  server.stop();
+  dnsServer.stop();
+  WiFi.disconnect(true);
+  WiFi.softAPdisconnect(true);
+  delay(100);
+
   // --- EKLENDİ: IP çakışmasını önlemek ve sabit IP vermek için ---
   WiFi.mode(WIFI_AP);
   WiFi.softAPConfig(IPAddress(192,168,4,1), IPAddress(192,168,4,1), IPAddress(255,255,255,0));
@@ -123,30 +131,46 @@ void startHotspot() {
   for (int i = 0; i < LED_COUNT; i++) {
     strip.setPixelColor(i, strip.Color(0, 0, 255));
   }
+  noInterrupts();
   strip.show();
+  interrupts();
 }
 
+// WiFi scan cache (handleRoot her çağrıldığında taranmaz, 30sn'de bir taranır)
+static unsigned long lastScanTime = 0;
+static int cachedScanCount = 0;
+
 void handleRoot() {
-  // Ağları tara
-  int n = WiFi.scanNetworks();
-  
-  String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1'>";
-  html += "<style>body{font-family:sans-serif;padding:20px;text-align:center;background:#f0f2f5}form{background:white;padding:20px;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,0.1);max-width:400px;margin:0 auto}h1{color:#333}select,input{padding:12px;margin:10px 0;width:100%;box-sizing:border-box;border:1px solid #ddd;border-radius:4px}button{padding:12px 20px;background:#007bff;color:white;border:none;border-radius:4px;cursor:pointer;width:100%;font-size:16px}button:hover{background:#0056b3}</style>";
+  // 30 saniyede bir tara, arasında cache kullan
+  unsigned long now = millis();
+  if (now - lastScanTime > 30000 || cachedScanCount <= 0) {
+    cachedScanCount = WiFi.scanNetworks();
+    lastScanTime = now;
+  }
+  int n = cachedScanCount;
+
+  // HTML'i parça parça oluştur (heap fragmentation önleme)
+  String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1'>";
+  html += "<style>body{font-family:sans-serif;padding:20px;text-align:center;background:#f0f2f5}";
+  html += "form{background:white;padding:20px;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,.1);max-width:400px;margin:0 auto}";
+  html += "h1{color:#333}select,input{padding:12px;margin:10px 0;width:100%;box-sizing:border-box;border:1px solid #ddd;border-radius:4px}";
+  html += "button{padding:12px 20px;background:#007bff;color:#fff;border:none;border-radius:4px;cursor:pointer;width:100%;font-size:16px}";
+  html += "button:hover{background:#0056b3}</style>";
   html += "<title>Wemos Kurulum</title></head><body>";
-  html += "<br><h1>🌐 Wi-Fi Agini Sec</h1>";
+  html += "<br><h1>Wi-Fi Agini Sec</h1>";
   html += "<form action='/wifi_config' method='POST'>";
-  
+
   html += "<label>Mevcut Aglar (" + String(n) + " bulundu):</label><br>";
   html += "<select name='ssid'>";
-  
-  if (n == 0) {
+
+  if (n <= 0) {
     html += "<option>Ag bulunamadi</option>";
   } else {
     for (int i = 0; i < n; ++i) {
       String ssid = WiFi.SSID(i);
       int rssi = WiFi.RSSI(i);
-      String enc = (WiFi.encryptionType(i) == ENC_TYPE_NONE) ? " " : "🔒";
-      html += "<option value='" + ssid + "'>" + ssid + " (" + rssi + "dBm) " + enc + "</option>";
+      String enc = (WiFi.encryptionType(i) == ENC_TYPE_NONE) ? "" : " *";
+      html += "<option value='" + ssid + "'>" + ssid + " (" + rssi + "dBm)" + enc + "</option>";
     }
   }
   html += "</select><br>";
@@ -177,11 +201,11 @@ void handleWiFiConfig() {
       saved_password = password;
       
       // Yanıt gönder
-      server.send(200, "text/plain", "OK:WiFi bilgileri kaydedildi. Yeniden başlatılıyor...");
-      
+      server.send(200, "text/plain", "OK:WiFi bilgileri kaydedildi. Yeniden baslatiliyor...");
+
       delay(1000);
-      
-      // Wi-Fi'ye bağlan (Önce hotspot'ı ve DNS'i durdurmak iyi fikirdir ama reset atacağız genelde)
+
+      // Wi-Fi'ye bağlan (temizlik connectToWiFi icinde yapiliyor)
       connectToWiFi();
     } else {
       server.send(400, "text/plain", "ERROR:SSID boş olamaz");
@@ -214,7 +238,9 @@ void handleToggleSleep() {
   isSleepMode = !isSleepMode;
   if (isSleepMode) {
     strip.clear();
+    noInterrupts();
     strip.show();
+    interrupts();
     Serial.println("Uyku modu AKTIF: LED'ler kapatildi.");
     server.send(200, "text/plain", "SLEEP_ON");
   } else {
@@ -225,12 +251,12 @@ void handleToggleSleep() {
 
 void handleResetWifi() {
   server.send(200, "text/plain", "OK: Wi-Fi ayarlari siliniyor ve reset atiliyor...");
-  delay(100);
-  
-  // 1. Wi-Fi bağlantısını kes ve kayıtlı ağları UNUT (Flash'tan siler)
-  WiFi.disconnect(true); 
   delay(500);
-  
+
+  // 1. Wi-Fi baglantısını kes ve kayitlilari UNUT (Flash'tan siler)
+  WiFi.disconnect(true);
+  delay(500);
+
   // 2. EEPROM'u da temizle
   EEPROM.begin(EEPROM_SIZE);
   for (int i = 0; i < EEPROM_SIZE; i++) {
@@ -238,7 +264,7 @@ void handleResetWifi() {
   }
   EEPROM.commit();
   EEPROM.end();
-  
+
   Serial.println("Wi-Fi ayarlari silindi. Cihaz yeniden baslatiliyor...");
   delay(500);
   ESP.restart();
@@ -246,13 +272,16 @@ void handleResetWifi() {
 
 void connectToWiFi() {
   Serial.println();
-  Serial.print("Wi-Fi'ye bağlanılıyor: ");
+  Serial.print("Wi-Fi'ye baglaniyor: ");
   Serial.println(saved_ssid);
-  
-  // --- EKLENDİ: Eski hotspot ve DNS ayarlarını temizle ---
+
+  // Eski baglantilari ve soketleri temizle
+  Udp.stop();
+  server.stop();
+  dnsServer.stop();
   WiFi.softAPdisconnect(true);
   WiFi.enableAP(false);
-  // -----------------------------------------------------
+  delay(100);
 
   WiFi.mode(WIFI_STA);
   WiFi.begin(saved_ssid.c_str(), saved_password.c_str());
@@ -267,7 +296,9 @@ void connectToWiFi() {
     for (int i = 0; i < LED_COUNT; i++) {
       strip.setPixelColor(i, strip.Color(255, 255, 0));
     }
+    noInterrupts();
     strip.show();
+    interrupts();
   }
   
   if (WiFi.status() == WL_CONNECTED) {
@@ -282,12 +313,16 @@ void connectToWiFi() {
     for (int i = 0; i < LED_COUNT; i++) {
       strip.setPixelColor(i, strip.Color(0, 255, 0));
     }
+    noInterrupts();
     strip.show();
+    interrupts();
     delay(1000);
-    
+
     // LED'leri kapat
     strip.clear();
+    noInterrupts();
     strip.show();
+    interrupts();
     
     // UDP dinlemeye başla
     Udp.begin(UDP_PORT);
@@ -322,7 +357,9 @@ void setup() {
   // LED başlat
   strip.begin();
   strip.clear();
+  noInterrupts();
   strip.show();
+  interrupts();
   
   // EEPROM'dan Wi-Fi bilgilerini yükle
   loadWiFiCredentials();
@@ -352,7 +389,7 @@ void loop() {
     int packetSize = Udp.parsePacket();
     if (packetSize > 0) {
       char packet[255];
-      int len = Udp.read(packet, 255);
+      int len = Udp.read(packet, 254);
       if (len > 0) {
         packet[len] = 0;
         if (strstr(packet, "AMBLIGHT_DISCOVERY") != NULL) {
@@ -365,6 +402,32 @@ void loop() {
       }
     }
   } else {
+    // Normal modda WiFi reconnect yonetimi
+    static unsigned long lastReconnectAttempt = 0;
+    static int reconnectCount = 0;
+
+    if (WiFi.status() != WL_CONNECTED) {
+      unsigned long now = millis();
+      if (now - lastReconnectAttempt > 10000) {
+        lastReconnectAttempt = now;
+        reconnectCount++;
+        Serial.print("Wi-Fi baglantisi kesildi! Yeniden baglaniyor... (deneme ");
+        Serial.print(reconnectCount);
+        Serial.println("/5)");
+        WiFi.disconnect();
+        delay(100);
+        WiFi.begin(saved_ssid.c_str(), saved_password.c_str());
+      }
+      if (reconnectCount >= 5) {
+        Serial.println("5 deneme basarisiz. Hotspot moduna geciliyor...");
+        reconnectCount = 0;
+        startHotspot();
+        return;
+      }
+    } else {
+      reconnectCount = 0;
+    }
+
     // Normal mod: HTTP isteklerini de işle
     server.handleClient();
     
@@ -410,7 +473,9 @@ void loop() {
           uint8_t b = packetBuffer[i * 3 + 2];
           strip.setPixelColor(i, strip.Color(r, g, b));
         }
+        noInterrupts();
         strip.show();
+        interrupts();
         lastDataTime = millis();
         receivingData = true;
       }
@@ -426,24 +491,19 @@ void loop() {
       if (millis() - lastAnimUpdate > 80) {
         lastAnimUpdate = millis();
         strip.clear();
-        int trailLengths[] = {6, 5, 4, 3, 2, 1};
         uint8_t brightness[] = {255, 180, 120, 70, 35, 10};
-        
+
         for (int t = 0; t < 6; t++) {
           int pos = (idleAnimPos - t + LED_COUNT) % LED_COUNT;
           uint8_t r = brightness[t];
           uint8_t g = (uint8_t)(brightness[t] * 0.65);
           strip.setPixelColor(pos, strip.Color(r, g, 0));
         }
+        noInterrupts();
         strip.show();
+        interrupts();
         idleAnimPos = (idleAnimPos + 1) % LED_COUNT;
       }
-    }
-    
-    if (WiFi.status() != WL_CONNECTED) {
-      Serial.println("Wi-Fi bağlantısı kesildi! Hotspot moduna dönülüyor...");
-      delay(1000);
-      startHotspot();
     }
   }
 }

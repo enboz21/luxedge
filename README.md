@@ -4,7 +4,7 @@
     <strong>Monitör arkası LED aydınlatmasını otomatik olarak yöneten, Electron + Python tabanlı masaüstü uygulaması</strong>
   </p>
   <p align="center">
-    <img src="https://img.shields.io/badge/version-1.5.3-blue?style=flat-square" alt="Version">
+    <img src="https://img.shields.io/badge/version-1.5.4-blue?style=flat-square" alt="Version">
     <img src="https://img.shields.io/badge/platform-Windows%20|%20Linux-0078D6?style=flat-square&logo=windows&logoColor=white" alt="Platform">
     <img src="https://img.shields.io/badge/license-CC%20BY--NC%204.0-green?style=flat-square" alt="License">
     <img src="https://img.shields.io/badge/hardware-ESP8266%20(Wemos)-red?style=flat-square" alt="Hardware">
@@ -165,8 +165,8 @@ Bu script sırasıyla Python kodunu `lush_backend` olarak binary halinde derler 
 **Çıktılar (Son Kullanıcıya Verilecek Dosyalar):**
 Derleme sonrası `dist/` klasörü içerisinde iki ana dağıtım dosyası oluşur. Arkadaşınızın/Karşı tarafın makine tipine göre şu dosyaları flaşınıza kopyalayıp verebilirsiniz:
 
-- **`.AppImage` (Örn: `LuxEdge-1.5.3.AppImage`):** Tak ve çalıştır (Portable). Sistemde hiçbir şey kurulu olmadan sadece çift tıklayarak çalışır. 
-- **`.pacman` (Örn: `luxedge-1.5.3.pacman`):** Arch Linux kullanıcılarının sistemlerine resmi bir program gibi kurmaları içindir (`sudo pacman -U dosyaadi.pacman`).
+- **`.AppImage` (Örn: `LuxEdge-1.5.4.AppImage`):** Tak ve çalıştır (Portable). Sistemde hiçbir şey kurulu olmadan sadece çift tıklayarak çalışır. 
+- **`.pacman` (Örn: `luxedge-1.5.4.pacman`):** Arch Linux kullanıcılarının sistemlerine resmi bir program gibi kurmaları içindir (`sudo pacman -U dosyaadi.pacman`).
 - **`.deb`:** Ubuntu/Debian tabanlı sistemlere kalıcı kurmak içindir (`sudo dpkg -i dosyaadi.deb`).
 
 ---
@@ -268,7 +268,13 @@ luxedge/
 
 ## 📝 Sürüm Geçmişi
 
-### v1.5.3 (Güncel)
+### v1.5.4 (Güncel)
+- 🐛 **Wemos Kararlılık İyileştirmeleri:** ESP8266 NeoPixel sinyal kesilmelerini önlemek için `strip.show()` çağrılarına interrupt (kesme) koruması eklendi.
+- 📡 **Gelişmiş Wi-Fi Yeniden Bağlanma:** Bağlantı koptuğunda hemen hotspot moduna geçmek yerine 5 kez yeniden bağlanma denemesi (10 saniye aralıklarla) eklendi.
+- 🚀 **Performans Optimizasyonları:** Wemos arayüzünde heap fragmentation (bellek parçalanması) sorununu önlemek için Wi-Fi tarama sonuçları önbelleğe alındı (30 saniye) ve HTML oluşturma iyileştirildi.
+- 🌐 **Karakter Düzeltmeleri:** Wemos kurulum sayfasında sorun çıkaran Türkçe karakterler İngilizce karşılıklarıyla değiştirildi.
+
+### v1.5.3
 - 🐛 **Çoklu Monitör Fullscreen Algılama Düzeltmesi (Windows):** LED monitöründe tam ekran bir uygulama (oyun, YouTube vb.) açıkken ikinci ekrana tıklanması durumunda LED'lerin sabit idle rengine geçmesi sorunu giderildi. Artık focus hangi ekranda olursa olsun, LED monitöründe tam ekran pencere varsa ekran renkleri takip edilmeye devam eder.
 - 🔧 **DWM Cloaked Filtresi:** Windows'un arka planda tuttuğu görünmez sistem pencerelerinin (ör: "Windows Giriş Deneyimi") yanlışlıkla tam ekran olarak algılanması engellendi.
 - ⚠️ **Not:** Linux tarafı için de aynı düzeltme uygulandı (`_NET_CLIENT_LIST` ile tüm pencere taraması) ancak henüz test edilmedi.
