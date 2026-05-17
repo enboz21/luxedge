@@ -4,7 +4,7 @@
     <strong>Monitör arkası LED aydınlatmasını otomatik olarak yöneten, Electron + Python tabanlı masaüstü uygulaması</strong>
   </p>
   <p align="center">
-    <img src="https://img.shields.io/badge/version-1.5.4-blue?style=flat-square" alt="Version">
+    <img src="https://img.shields.io/badge/version-1.5.5-blue?style=flat-square" alt="Version">
     <img src="https://img.shields.io/badge/platform-Windows%20|%20Linux-0078D6?style=flat-square&logo=windows&logoColor=white" alt="Platform">
     <img src="https://img.shields.io/badge/license-CC%20BY--NC%204.0-green?style=flat-square" alt="License">
     <img src="https://img.shields.io/badge/hardware-ESP8266%20(Wemos)-red?style=flat-square" alt="Hardware">
@@ -165,8 +165,8 @@ Bu script sırasıyla Python kodunu `lush_backend` olarak binary halinde derler 
 **Çıktılar (Son Kullanıcıya Verilecek Dosyalar):**
 Derleme sonrası `dist/` klasörü içerisinde iki ana dağıtım dosyası oluşur. Arkadaşınızın/Karşı tarafın makine tipine göre şu dosyaları flaşınıza kopyalayıp verebilirsiniz:
 
-- **`.AppImage` (Örn: `LuxEdge-1.5.4.AppImage`):** Tak ve çalıştır (Portable). Sistemde hiçbir şey kurulu olmadan sadece çift tıklayarak çalışır. 
-- **`.pacman` (Örn: `luxedge-1.5.4.pacman`):** Arch Linux kullanıcılarının sistemlerine resmi bir program gibi kurmaları içindir (`sudo pacman -U dosyaadi.pacman`).
+- **`.AppImage` (Örn: `LuxEdge-1.5.5.AppImage`):** Tak ve çalıştır (Portable). Sistemde hiçbir şey kurulu olmadan sadece çift tıklayarak çalışır. 
+- **`.pacman` (Örn: `luxedge-1.5.5.pacman`):** Arch Linux kullanıcılarının sistemlerine resmi bir program gibi kurmaları içindir (`sudo pacman -U dosyaadi.pacman`).
 - **`.deb`:** Ubuntu/Debian tabanlı sistemlere kalıcı kurmak içindir (`sudo dpkg -i dosyaadi.deb`).
 
 ---
@@ -268,7 +268,11 @@ luxedge/
 
 ## 📝 Sürüm Geçmişi
 
-### v1.5.4 (Güncel)
+### v1.5.5 (Güncel)
+- ✨ **Yeni Özellik:** Arayüze "Tam Ekran Maksimum Parlaklık" ayarı eklendi. Sistem sadece tam ekran modundayken LED'lerin çıkabileceği maksimum parlaklık sınırlandırılabilir.
+- ⚡ **Yeni Özellik:** Maksimum parlaklık ayarının hemen yanına, tüm LED'lerin tam beyaz yanması durumunda donanımın çekeceği tahmini **Maksimum Akım (Amper)** bilgisini gösteren dinamik bir gösterge eklendi.
+
+### v1.5.4
 - 🐛 **Wemos Kararlılık İyileştirmeleri:** ESP8266 NeoPixel sinyal kesilmelerini önlemek için `strip.show()` çağrılarına interrupt (kesme) koruması eklendi.
 - 📡 **Gelişmiş Wi-Fi Yeniden Bağlanma:** Bağlantı koptuğunda hemen hotspot moduna geçmek yerine 5 kez yeniden bağlanma denemesi (10 saniye aralıklarla) eklendi.
 - 🚀 **Performans Optimizasyonları:** Wemos arayüzünde heap fragmentation (bellek parçalanması) sorununu önlemek için Wi-Fi tarama sonuçları önbelleğe alındı (30 saniye) ve HTML oluşturma iyileştirildi.

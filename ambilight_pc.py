@@ -1133,6 +1133,7 @@ app_status = {
     "idle_use_windows_color": False,
     "idle_color": "#ff0000",
     "idle_brightness": 50,
+    "fullscreen_max_brightness": 255,
     "local_ip": "",
     "subnet": "",
     "packets_sent": 0,
@@ -1569,6 +1570,7 @@ def ambilight_worker(config):
     IDLE_USE_WINDOWS_COLOR = config.get("idle_use_windows_color", False)
     IDLE_COLOR = config.get("idle_color", "#ff0000")
     IDLE_BRIGHTNESS = config.get("idle_brightness", 50)
+    FULLSCREEN_MAX_BRIGHTNESS = config.get("fullscreen_max_brightness", 255)
     
     TOTAL_LEDS = TOP_LEDS + BOTTOM_LEDS + LEFT_LEDS + RIGHT_LEDS
     
@@ -1589,6 +1591,7 @@ def ambilight_worker(config):
     update_status("idle_use_windows_color", IDLE_USE_WINDOWS_COLOR)
     update_status("idle_color", IDLE_COLOR)
     update_status("idle_brightness", IDLE_BRIGHTNESS)
+    update_status("fullscreen_max_brightness", FULLSCREEN_MAX_BRIGHTNESS)
     update_status("running", True)
     update_status("uptime_start", time.time())
     update_status("connection", "bağlanıyor" if WEMOS_IP else "IP Bekleniyor...")
@@ -1639,11 +1642,13 @@ def ambilight_worker(config):
                     new_idle_use_windows_color = new_config.get("idle_use_windows_color", IDLE_USE_WINDOWS_COLOR)
                     new_idle_color = new_config.get("idle_color", IDLE_COLOR)
                     new_idle_brightness = new_config.get("idle_brightness", IDLE_BRIGHTNESS)
+                    new_fullscreen_max_brightness = new_config.get("fullscreen_max_brightness", FULLSCREEN_MAX_BRIGHTNESS)
                     
                     if (new_top != TOP_LEDS or new_bottom != BOTTOM_LEDS or 
                         new_left != LEFT_LEDS or new_right != RIGHT_LEDS or 
                         new_width != EDGE_WIDTH or new_offset != EDGE_OFFSET or
                         new_idle_mode != IDLE_MODE or new_idle_color != IDLE_COLOR or new_idle_brightness != IDLE_BRIGHTNESS or
+                        new_fullscreen_max_brightness != FULLSCREEN_MAX_BRIGHTNESS or
                         new_idle_use_windows_color != IDLE_USE_WINDOWS_COLOR):
                         old_total_leds = TOTAL_LEDS
                         
@@ -1651,6 +1656,7 @@ def ambilight_worker(config):
                         LEFT_LEDS, RIGHT_LEDS = new_left, new_right
                         EDGE_WIDTH, EDGE_OFFSET = new_width, new_offset
                         IDLE_MODE, IDLE_COLOR, IDLE_BRIGHTNESS = new_idle_mode, new_idle_color, new_idle_brightness
+                        FULLSCREEN_MAX_BRIGHTNESS = new_fullscreen_max_brightness
                         IDLE_USE_WINDOWS_COLOR = new_idle_use_windows_color
                         TOTAL_LEDS = TOP_LEDS + BOTTOM_LEDS + LEFT_LEDS + RIGHT_LEDS
                         
@@ -1674,6 +1680,7 @@ def ambilight_worker(config):
                         update_status("idle_use_windows_color", IDLE_USE_WINDOWS_COLOR)
                         update_status("idle_color", IDLE_COLOR)
                         update_status("idle_brightness", IDLE_BRIGHTNESS)
+                        update_status("fullscreen_max_brightness", FULLSCREEN_MAX_BRIGHTNESS)
                         print("✓ (Worker) LED / Kenar / Bekleme Modu Konfigürasyonları Canlı Olarak Güncellendi.")
                     
                     new_ip = new_config.get("wemos_ip", "")
@@ -1700,7 +1707,9 @@ def ambilight_worker(config):
             try:
                 data = bytearray()
                 
-                if IDLE_MODE and not is_fullscreen():
+                is_full = is_fullscreen()
+                
+                if IDLE_MODE and not is_full:
                     if IDLE_USE_WINDOWS_COLOR:
                         current_color = get_windows_accent_color()
                     else:
@@ -1715,8 +1724,13 @@ def ambilight_worker(config):
                         data += bytes([r, g, b])
                 else:
                     colors = grab_edge_colors(TOP_LEDS, BOTTOM_LEDS, LEFT_LEDS, RIGHT_LEDS, EDGE_WIDTH, EDGE_OFFSET, sct)
-                    for r, g, b in colors:
-                        data += bytes([r, g, b])
+                    if is_full and FULLSCREEN_MAX_BRIGHTNESS < 255:
+                        b_ratio = FULLSCREEN_MAX_BRIGHTNESS / 255.0
+                        for r, g, b in colors:
+                            data += bytes([int(r * b_ratio), int(g * b_ratio), int(b * b_ratio)])
+                    else:
+                        for r, g, b in colors:
+                            data += bytes([r, g, b])
 
                 sock.sendto(data, (WEMOS_IP, WEMOS_PORT))
                 packets_sent += 1
@@ -1763,7 +1777,7 @@ def main():
     global running, ambilight_thread, icon
     
     print("\n" + "="*60)
-    print("  AMBILIGHT PC v1.5.4 - Linux & Windows")
+    print("  AMBILIGHT PC v1.5.5 - Linux & Windows")
     print("="*60)
     
     # Konfigürasyonu yükle
@@ -1783,7 +1797,8 @@ def main():
             "wemos_port": 7777,
             "fps": 60,
             "edge_width": 20,
-            "edge_offset": 0
+            "edge_offset": 0,
+            "fullscreen_max_brightness": 255
         }
 
     # Konfigürasyon değerlerini al
