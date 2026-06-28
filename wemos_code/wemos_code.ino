@@ -4,6 +4,8 @@
 #include <Adafruit_NeoPixel.h>
 #include <EEPROM.h>
 #include <DNSServer.h> // --- EKLENDİ: Captive Portal için gerekli kütüphane ---
+#include <ArduinoOTA.h>
+#include <ESP8266HTTPUpdateServer.h>
 
 #define LED_PIN   3        // RX pin (GPIO3) - I2C'den bağımsız, toprağa uzak, güvenli
 #define LED_COUNT 74       // 34 + 0 + 20 + 20 (config ile eşleşmeli)
@@ -22,6 +24,7 @@ WiFiUDP Udp;
 ESP8266WebServer server(80);
 DNSServer dnsServer; // --- EKLENDİ: DNS Sunucu nesnesi ---
 Adafruit_NeoPixel strip(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
+ESP8266HTTPUpdateServer httpUpdater; // OTA HTTP güncelleyici nesnesi
 
 bool isHotspotMode = false;
 
@@ -45,6 +48,16 @@ void handleRestart();
 void handleToggleSleep();
 void handleResetWifi();
 void connectToWiFi();
+
+// XSS koruması için HTML escape fonksiyonu
+String htmlEscape(String input) {
+  input.replace("&", "&amp;");
+  input.replace("<", "&lt;");
+  input.replace(">", "&gt;");
+  input.replace("\"", "&quot;");
+  input.replace("'", "&#39;");
+  return input;
+}
 
 void saveWiFiCredentials(String ssid, String password) {
   EEPROM.begin(EEPROM_SIZE);
@@ -131,9 +144,7 @@ void startHotspot() {
   for (int i = 0; i < LED_COUNT; i++) {
     strip.setPixelColor(i, strip.Color(0, 0, 255));
   }
-  noInterrupts();
   strip.show();
-  interrupts();
 }
 
 // WiFi scan cache (handleRoot her çağrıldığında taranmaz, 30sn'de bir taranır)
@@ -170,7 +181,7 @@ void handleRoot() {
       String ssid = WiFi.SSID(i);
       int rssi = WiFi.RSSI(i);
       String enc = (WiFi.encryptionType(i) == ENC_TYPE_NONE) ? "" : " *";
-      html += "<option value='" + ssid + "'>" + ssid + " (" + rssi + "dBm)" + enc + "</option>";
+      html += "<option value='" + htmlEscape(ssid) + "'>" + htmlEscape(ssid) + " (" + rssi + "dBm)" + enc + "</option>";
     }
   }
   html += "</select><br>";
@@ -238,9 +249,7 @@ void handleToggleSleep() {
   isSleepMode = !isSleepMode;
   if (isSleepMode) {
     strip.clear();
-    noInterrupts();
     strip.show();
-    interrupts();
     Serial.println("Uyku modu AKTIF: LED'ler kapatildi.");
     server.send(200, "text/plain", "SLEEP_ON");
   } else {
@@ -286,19 +295,17 @@ void connectToWiFi() {
   WiFi.mode(WIFI_STA);
   WiFi.begin(saved_ssid.c_str(), saved_password.c_str());
   
+  // LED'i sarı yap (bağlanıyor) - döngüden önce 1 kere ayarla
+  for (int i = 0; i < LED_COUNT; i++) {
+    strip.setPixelColor(i, strip.Color(255, 255, 0));
+  }
+  strip.show();
+
   int attempts = 0;
   while (WiFi.status() != WL_CONNECTED && attempts < 30) {
     delay(500);
     Serial.print(".");
     attempts++;
-    
-    // LED'i sarı yap (bağlanıyor)
-    for (int i = 0; i < LED_COUNT; i++) {
-      strip.setPixelColor(i, strip.Color(255, 255, 0));
-    }
-    noInterrupts();
-    strip.show();
-    interrupts();
   }
   
   if (WiFi.status() == WL_CONNECTED) {
@@ -308,21 +315,19 @@ void connectToWiFi() {
     Serial.println(WiFi.localIP());
     
     isHotspotMode = false;
+    WiFi.setAutoReconnect(true);
+    WiFi.persistent(true);
     
     // LED'i yeşil yap (bağlandı)
     for (int i = 0; i < LED_COUNT; i++) {
       strip.setPixelColor(i, strip.Color(0, 255, 0));
     }
-    noInterrupts();
     strip.show();
-    interrupts();
     delay(1000);
 
     // LED'leri kapat
     strip.clear();
-    noInterrupts();
     strip.show();
-    interrupts();
     
     // UDP dinlemeye başla
     Udp.begin(UDP_PORT);
@@ -334,6 +339,46 @@ void connectToWiFi() {
     server.on("/restart", handleRestart);
     server.on("/toggle_sleep", handleToggleSleep);
     server.on("/reset_wifi", handleResetWifi);
+    // OTA HTTP güncelleyici - /firmware adresinden erişilir
+    httpUpdater.setup(&server, "/firmware");
+
+    // ArduinoOTA ayarları
+    ArduinoOTA.setHostname("luxedge-wemos");
+    ArduinoOTA.onStart([]() {
+      // OTA başladığında mor renk
+      for (int i = 0; i < LED_COUNT; i++) {
+        strip.setPixelColor(i, strip.Color(128, 0, 255));
+      }
+      strip.show();
+    });
+    ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+      // İlerleme göstergesi - mor dolum
+      int ledProgress = (progress * LED_COUNT) / total;
+      for (int i = 0; i < LED_COUNT; i++) {
+        if (i <= ledProgress) {
+          strip.setPixelColor(i, strip.Color(128, 0, 255));
+        } else {
+          strip.setPixelColor(i, strip.Color(0, 0, 0));
+        }
+      }
+      strip.show();
+    });
+    ArduinoOTA.onEnd([]() {
+      // OTA tamamlandığında yeşil flaş
+      for (int i = 0; i < LED_COUNT; i++) {
+        strip.setPixelColor(i, strip.Color(0, 255, 0));
+      }
+      strip.show();
+    });
+    ArduinoOTA.onError([](ota_error_t error) {
+      // Hata durumunda kırmızı
+      for (int i = 0; i < LED_COUNT; i++) {
+        strip.setPixelColor(i, strip.Color(255, 0, 0));
+      }
+      strip.show();
+    });
+    ArduinoOTA.begin();
+
     server.begin();
     
     Serial.println("UDP dinleme ve HTTP sunucu başlatıldı (Port 7777 + 80)");
@@ -357,9 +402,7 @@ void setup() {
   // LED başlat
   strip.begin();
   strip.clear();
-  noInterrupts();
   strip.show();
-  interrupts();
   
   // EEPROM'dan Wi-Fi bilgilerini yükle
   loadWiFiCredentials();
@@ -402,6 +445,9 @@ void loop() {
       }
     }
   } else {
+    // OTA güncellemelerini kontrol et
+    ArduinoOTA.handle();
+
     // Normal modda WiFi reconnect yonetimi
     static unsigned long lastReconnectAttempt = 0;
     static int reconnectCount = 0;
@@ -413,13 +459,13 @@ void loop() {
         reconnectCount++;
         Serial.print("Wi-Fi baglantisi kesildi! Yeniden baglaniyor... (deneme ");
         Serial.print(reconnectCount);
-        Serial.println("/5)");
+        Serial.println("/12)");
         WiFi.disconnect();
         delay(100);
         WiFi.begin(saved_ssid.c_str(), saved_password.c_str());
       }
-      if (reconnectCount >= 5) {
-        Serial.println("5 deneme basarisiz. Hotspot moduna geciliyor...");
+      if (reconnectCount >= 12) {
+        Serial.println("12 deneme basarisiz. Hotspot moduna geciliyor...");
         reconnectCount = 0;
         startHotspot();
         return;
@@ -473,9 +519,7 @@ void loop() {
           uint8_t b = packetBuffer[i * 3 + 2];
           strip.setPixelColor(i, strip.Color(r, g, b));
         }
-        noInterrupts();
         strip.show();
-        interrupts();
         lastDataTime = millis();
         receivingData = true;
       }
@@ -499,11 +543,10 @@ void loop() {
           uint8_t g = (uint8_t)(brightness[t] * 0.65);
           strip.setPixelColor(pos, strip.Color(r, g, 0));
         }
-        noInterrupts();
         strip.show();
-        interrupts();
         idleAnimPos = (idleAnimPos + 1) % LED_COUNT;
       }
     }
   }
+  yield(); // ESP8266 Wi-Fi stack'ine işlem zamanı ver
 }

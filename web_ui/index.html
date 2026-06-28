@@ -609,7 +609,7 @@
                     </a>
                 </div>
                 <div style="font-size: 11px; color: var(--text-muted); margin-top: 15px; text-align: center;">
-                    Versiyon 1.5.5
+                    Versiyon 1.6.0
                 </div>
             </div>
         </div>
@@ -819,6 +819,34 @@
                     </div>
                 </div>
 
+                <!-- Firmware Güncelleme -->
+                <div class="card grid-full">
+                    <div class="card-header">
+                        <div class="card-title"><span>📦</span> Firmware Güncelleme (OTA)</div>
+                    </div>
+                    <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 15px;">
+                        Wemos firmware'ını Wi-Fi üzerinden güncelleyin. <code>.bin</code> dosyasını seçip yükleyin.
+                        Güncelleme sırasında LED'ler <span style="color: #8000ff; font-weight: 600;">mor</span> renkte yanacaktır.
+                    </p>
+                    <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                        <input type="file" id="firmware-file" accept=".bin"
+                            style="background: var(--bg-body); border: 1px solid var(--border-color); color: var(--text-primary); padding: 8px; border-radius: var(--radius-md); flex-grow: 1; max-width: 400px;">
+                        <button class="btn btn-primary" onclick="uploadFirmware()" id="btn-upload-firmware"
+                            title="Seçilen .bin dosyasını Wemos'a yükler">
+                            🚀 Firmware Yükle
+                        </button>
+                    </div>
+                    <div id="ota-progress" style="display: none; margin-top: 15px;">
+                        <div style="background: var(--bg-body); border-radius: 4px; height: 8px; overflow: hidden;">
+                            <div id="ota-progress-bar" style="background: linear-gradient(90deg, #8000ff, #b366ff); height: 100%; width: 0%; transition: width 0.5s; border-radius: 4px;"></div>
+                        </div>
+                        <p id="ota-status" style="font-size: 12px; color: var(--text-muted); margin-top: 8px;">Yükleniyor...</p>
+                    </div>
+                    <p style="font-size: 11px; color: var(--text-muted); margin-top: 10px;">
+                        ⚠️ <b>Dikkat:</b> Güncelleme sırasında Wemos'un bağlantısını kesmeyin. Güncelleme yaklaşık 10-30 saniye sürer.
+                    </p>
+                </div>
+
                 <!-- Sistem Ayarları -->
                 <div class="card grid-full">
                     <div class="card-header">
@@ -992,7 +1020,7 @@
             const toast = document.createElement('div');
             toast.className = 'toast';
             toast.style.borderLeftColor = type === 'success' ? 'var(--success-color)' : (type === 'error' ? 'var(--danger-color)' : 'var(--accent-color)');
-            toast.innerHTML = message;
+            toast.textContent = message;
             container.appendChild(toast);
             setTimeout(() => {
                 toast.style.opacity = '0';
@@ -1169,6 +1197,86 @@
                 }
             } catch (e) {
                 if (!silent) showToast('❌ Kayıt hatası oluştu', 'error');
+            }
+        }
+
+        // --- OTA Firmware Upload ---
+        async function uploadFirmware() {
+            const fileInput = document.getElementById('firmware-file');
+            const file = fileInput.files[0];
+            
+            if (!file) {
+                showToast('Lütfen bir .bin dosyası seçin.', 'error');
+                return;
+            }
+            
+            if (!file.name.endsWith('.bin')) {
+                showToast('Sadece .bin dosyaları yüklenebilir.', 'error');
+                return;
+            }
+            
+            const btn = document.getElementById('btn-upload-firmware');
+            const progressDiv = document.getElementById('ota-progress');
+            const progressBar = document.getElementById('ota-progress-bar');
+            const statusText = document.getElementById('ota-status');
+            
+            // UI güncelle
+            btn.disabled = true;
+            btn.textContent = '⏳ Yükleniyor...';
+            progressDiv.style.display = 'block';
+            progressBar.style.width = '0%';
+            statusText.textContent = 'Firmware dosyası okunuyor...';
+            
+            try {
+                const arrayBuffer = await file.arrayBuffer();
+                const uint8Array = new Uint8Array(arrayBuffer);
+                
+                progressBar.style.width = '30%';
+                statusText.textContent = 'Wemos\'a gönderiliyor...';
+                
+                const result = await api.saveConfig({_ota_firmware: true}); // Trigger OTA
+                
+                // Doğrudan Wemos'a HTTP ile gönder
+                const wemosIp = document.getElementById('wemos-ip').textContent;
+                if (!wemosIp || wemosIp === '-') {
+                    throw new Error('Wemos IP adresi bulunamadı');
+                }
+                
+                const formData = new FormData();
+                formData.append('firmware', file);
+                
+                progressBar.style.width = '50%';
+                statusText.textContent = 'Firmware yükleniyor... Lütfen bekleyin.';
+                
+                try {
+                    const response = await fetch(`http://${wemosIp}/firmware`, {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    progressBar.style.width = '100%';
+                    statusText.textContent = '✅ Firmware başarıyla yüklendi! Wemos yeniden başlatılıyor...';
+                    showToast('✅ Firmware güncellendi! Wemos yeniden başlatılıyor...', 'success');
+                } catch (fetchErr) {
+                    // Wemos güncelleme sonrası restart oluyor, bağlantı kopabilir - bu normal
+                    progressBar.style.width = '100%';
+                    statusText.textContent = '✅ Firmware gönderildi! Wemos yeniden başlatılıyor...';
+                    showToast('✅ Firmware gönderildi, Wemos yeniden başlatılıyor...', 'success');
+                }
+                
+                // 10 saniye sonra durumu güncelle
+                setTimeout(() => {
+                    progressDiv.style.display = 'none';
+                    fetchStatus();
+                }, 10000);
+                
+            } catch (error) {
+                progressBar.style.width = '0%';
+                statusText.textContent = '❌ Hata: ' + error.message;
+                showToast('Firmware yükleme hatası: ' + error.message, 'error');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '🚀 Firmware Yükle';
             }
         }
 

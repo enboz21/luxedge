@@ -82,7 +82,7 @@ def get_config_path():
     return new_path
 
 def load_config():
-    """Konfigürasyon dosyasını yükler"""
+    """Konfigürasyon dosyasını yükler (bozuksa yedekten)"""
     config_path = get_config_path()
     if os.path.exists(config_path):
         try:
@@ -90,13 +90,34 @@ def load_config():
                 return json.load(f)
         except Exception as e:
             print(f"[HATA] Konfigürasyon dosyası okunamadı: {e}")
+            # Yedekten okumayı dene
+            backup_path = config_path + '.bak'
+            if os.path.exists(backup_path):
+                try:
+                    print("[BİLGİ] Yedek konfigürasyon dosyası okunuyor...")
+                    with open(backup_path, 'r', encoding='utf-8') as f:
+                        config = json.load(f)
+                    # Yedekten başarılı okuduysa, ana dosyayı düzelt
+                    shutil.copy2(backup_path, config_path)
+                    print("[BİLGİ] Yedek konfigürasyon dosyası geri yüklendi.")
+                    return config
+                except Exception:
+                    pass
             return None
     return None
 
 def save_config(config):
-    """Konfigürasyon dosyasını kaydeder"""
+    """Konfigürasyon dosyasını kaydeder (yedek alarak)"""
     config_path = get_config_path()
     try:
+        # Mevcut config'i yedekle
+        if os.path.exists(config_path):
+            backup_path = config_path + '.bak'
+            try:
+                shutil.copy2(config_path, backup_path)
+            except Exception:
+                pass
+        
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(config, f, indent=4, ensure_ascii=False)
         return True
@@ -199,7 +220,7 @@ def get_all_active_ips():
         for ip in socket.gethostbyname_ex(hostname)[2]:
             if not ip.startswith('127.'):
                 ips.add(ip)
-    except:
+    except Exception:
         pass
 
     if sys.platform == 'win32':
@@ -213,7 +234,7 @@ def get_all_active_ips():
                         ip = match.group(1)
                         if not ip.startswith('127.'):
                             ips.add(ip)
-        except:
+        except Exception:
             pass
     else:
         try:
@@ -225,7 +246,7 @@ def get_all_active_ips():
                     ip = match.group(1)
                     if not ip.startswith('127.'):
                         ips.add(ip)
-        except:
+        except Exception:
             pass
         
     return list(ips)
@@ -791,7 +812,7 @@ def hex_to_rgb(hex_color):
     hex_color = str(hex_color).lstrip('#')
     try:
         return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
-    except:
+    except Exception:
         return (255, 0, 0)
 
 def get_system_accent_color():
@@ -1116,6 +1137,9 @@ sock = None
 sct = None
 icon = None
 
+# Connectivity thread iptal mekanizması
+connectivity_cancel_event = threading.Event()
+
 # Web UI durum bilgisi
 app_status = {
     "connection": "bağlantı yok",
@@ -1171,7 +1195,7 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
         try:
             self.send_response(200)
             self.send_header('Content-Type', 'application/json; charset=utf-8')
-            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Access-Control-Allow-Origin', 'http://127.0.0.1')
             self.end_headers()
             self.wfile.write(json.dumps(data, ensure_ascii=False).encode('utf-8'))
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
@@ -1202,6 +1226,8 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
                 self.handle_wemos_sleep()
             elif self.path == '/api/wemos/reset_wifi':
                 self.handle_wemos_reset_wifi()
+            elif self.path == '/api/wemos/ota':
+                self.handle_wemos_ota()
             else:
                 self.send_error(404)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
@@ -1215,7 +1241,7 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
                 content = f.read()
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
-            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Access-Control-Allow-Origin', 'http://127.0.0.1')
             self.end_headers()
             self.wfile.write(content.encode('utf-8'))
         except FileNotFoundError:
@@ -1344,7 +1370,7 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
             # Wemos sıfırlandığı için yanıt gelemeyebilir
             try:
                 urllib.request.urlopen(url, timeout=1)
-            except:
+            except Exception:
                 pass
                 
             result = {"success": True, "message": "Wemos sıfırlanıyor, hotspot moduna dönülecek..."}
@@ -1353,17 +1379,67 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
             
         self._safe_send_json(result)
 
+    def handle_wemos_ota(self):
+        """Wemos'a HTTP üzerinden firmware yükle"""
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            if content_length == 0:
+                self._safe_send_json({"success": False, "message": "Dosya boş"})
+                return
+            
+            firmware_data = self.rfile.read(content_length)
+            wemos_ip = get_status().get('wemos_ip')
+            
+            if not wemos_ip:
+                self._safe_send_json({"success": False, "message": "Wemos IP adresi ayarlanmamış"})
+                return
+            
+            # Wemos'un HTTP Update Server'ına firmware'ı gönder
+            import urllib.request
+            url = f"http://{wemos_ip}/firmware"
+            
+            # multipart/form-data olarak gönder
+            boundary = '----FirmwareBoundary'
+            body = []
+            body.append(f'--{boundary}'.encode())
+            body.append(b'Content-Disposition: form-data; name="firmware"; filename="firmware.bin"')
+            body.append(b'Content-Type: application/octet-stream')
+            body.append(b'')
+            body.append(firmware_data)
+            body.append(f'--{boundary}--'.encode())
+            body.append(b'')
+            
+            data = b'\r\n'.join(body)
+            
+            req = urllib.request.Request(url, data=data, method='POST')
+            req.add_header('Content-Type', f'multipart/form-data; boundary={boundary}')
+            
+            with urllib.request.urlopen(req, timeout=120) as response:
+                result_text = response.read().decode('utf-8', errors='ignore')
+                self._safe_send_json({"success": True, "message": f"Firmware yüklendi! Wemos yeniden başlatılıyor... ({result_text})"})
+        except urllib.error.URLError as e:
+            # Wemos güncelleme sonrası restart oluyor, bağlantı kopabilir
+            self._safe_send_json({"success": True, "message": "Firmware gönderildi, Wemos yeniden başlatılıyor..."})
+        except Exception as e:
+            self._safe_send_json({"success": False, "message": f"Firmware yükleme hatası: {str(e)}"})
+
 def restart_app():
-    """Uygulamayı yeniden başlat"""
+    """Uygulamayı güvenli şekilde yeniden başlat"""
     global running
     running = False
     time.sleep(1)
-    os.execv(sys.executable, [sys.executable] + sys.argv)
+    try:
+        python = sys.executable
+        subprocess.Popen([python] + sys.argv, close_fds=True)
+    except Exception as e:
+        print(f"[HATA] Yeniden başlatma başarısız: {e}")
+    finally:
+        os._exit(0)
 
 def start_web_server(port=8888):
     """Web UI sunucusunu arka planda başlat"""
     try:
-        server = HTTPServer(('0.0.0.0', port), WebUIHandler)
+        server = HTTPServer(('127.0.0.1', port), WebUIHandler)
         server.daemon_threads = True
         server_thread = threading.Thread(target=server.serve_forever, daemon=True)
         server_thread.start()
@@ -1375,7 +1451,7 @@ def start_web_server(port=8888):
             alt_port = port + 1
             print(f"[WEB UI] Port {port} kullanımda, {alt_port} deneniyor...")
             try:
-                server = HTTPServer(('0.0.0.0', alt_port), WebUIHandler)
+                server = HTTPServer(('127.0.0.1', alt_port), WebUIHandler)
                 server.daemon_threads = True
                 server_thread = threading.Thread(target=server.serve_forever, daemon=True)
                 server_thread.start()
@@ -1501,7 +1577,7 @@ def ping_wemos(ip, port=7777, timeout=3):
             pass
         return False
 
-def wemos_connectivity_checker(ip, port):
+def wemos_connectivity_checker(ip, port, cancel_event=None):
     """
     Arka planda Wemos'un erişilebilir olup olmadığını kontrol eder.
     Her 3 saniyede bir Wemos'a HTTP GET isteği gönderir, yanıt gelirse bağlı.
@@ -1515,13 +1591,13 @@ def wemos_connectivity_checker(ip, port):
     
     # İlk birkaç saniye bekle, worker başlasın
     for _ in range(30):
-        if not running:
+        if not running or (cancel_event and cancel_event.is_set()):
             return
         time.sleep(0.1)
     
     print(f"[BAĞLANTI] İlk kontrol yapılıyor...")
     
-    while running:
+    while running and (cancel_event is None or not cancel_event.is_set()):
         try:
             # UDP PING/PONG ile kontrol (port 7777 - Wemos firmware destekliyor)
             wemos_reachable = ping_wemos(ip, port=7777, timeout=3)
@@ -1549,7 +1625,7 @@ def wemos_connectivity_checker(ip, port):
         
         # 3 saniyede bir kontrol et
         for _ in range(30):
-            if not running:
+            if not running or (cancel_event and cancel_event.is_set()):
                 return
             time.sleep(0.1)
 
@@ -1608,10 +1684,12 @@ def ambilight_worker(config):
     
     # Wemos bağlantı kontrol thread'ini başlat (Eğer IP varsa)
     connectivity_thread = None
+    connectivity_cancel = None
     if WEMOS_IP:
+        connectivity_cancel = threading.Event()
         connectivity_thread = threading.Thread(
             target=wemos_connectivity_checker,
-            args=(WEMOS_IP, WEMOS_PORT),
+            args=(WEMOS_IP, WEMOS_PORT, connectivity_cancel),
             daemon=True
         )
         connectivity_thread.start()
@@ -1667,7 +1745,7 @@ def ambilight_worker(config):
                                 for _ in range(3):
                                     sock.sendto(blackout, (WEMOS_IP, WEMOS_PORT))
                                     time.sleep(0.05)
-                            except: pass
+                            except Exception: pass
                         
                         update_status("top_leds", TOP_LEDS)
                         update_status("bottom_leds", BOTTOM_LEDS)
@@ -1690,14 +1768,17 @@ def ambilight_worker(config):
                         update_status("wemos_ip", WEMOS_IP)
                         update_status("connection", "bağlanıyor")
                         
-                        # Bağlantı kontrol thread'ini yeniden başlat
-                        if connectivity_thread is None or not connectivity_thread.is_alive():
-                            connectivity_thread = threading.Thread(
-                                target=wemos_connectivity_checker,
-                                args=(WEMOS_IP, WEMOS_PORT),
-                                daemon=True
-                            )
-                            connectivity_thread.start()
+                        # Eski connectivity thread'ini iptal et ve yenisini başlat
+                        if connectivity_cancel:
+                            connectivity_cancel.set()
+                        time.sleep(0.5)  # Eski thread'in durmasını bekle
+                        connectivity_cancel = threading.Event()  # Yeni event
+                        connectivity_thread = threading.Thread(
+                            target=wemos_connectivity_checker,
+                            args=(WEMOS_IP, WEMOS_PORT, connectivity_cancel),
+                            daemon=True
+                        )
+                        connectivity_thread.start()
             
             # IP ayarlanmamışsa bekle
             if not WEMOS_IP:
@@ -1742,9 +1823,8 @@ def ambilight_worker(config):
                     actual_fps = fps_counter / (current_time - fps_timer)
                     update_status("actual_fps", round(actual_fps, 1))
                     update_status("packets_sent", packets_sent)
-                    # Paketler başarıyla gönderiliyorsa = bağlı
-                    if fps_counter > 0:
-                        update_status("connection", "bağlı")
+                    # NOT: Bağlantı durumu artık sadece connectivity_checker tarafından kontrol edilir.
+                    # UDP connectionless olduğu için sendto her zaman başarılı döner.
                     fps_counter = 0
                     fps_timer = current_time
                 
@@ -1777,7 +1857,7 @@ def main():
     global running, ambilight_thread, icon
     
     print("\n" + "="*60)
-    print("  AMBILIGHT PC v1.5.5 - Linux & Windows")
+    print("  AMBILIGHT PC v1.6.0 - Linux & Windows")
     print("="*60)
     
     # Konfigürasyonu yükle
