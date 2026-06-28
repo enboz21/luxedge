@@ -667,7 +667,8 @@
                     <div class="info-row"><span class="info-label">Paketler</span><span class="info-value"
                             id="packets-sent">0</span></div>
                     <div class="info-row"><span class="info-label">Hatalar</span><span class="info-value"
-                            id="error-count" style="color: var(--danger-color);">0</span></div>
+                            id="error-count" style="color: var(--text-muted); cursor: help;" title="Son hata bilgisi için buraya tıklayın">0</span></div>
+                    <div class="info-row" id="last-error-row" style="display:none;"><span class="info-label" style="color: var(--danger-color);">Son Hata</span><span class="info-value" id="last-error-text" style="color: var(--danger-color); font-size: 11px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title=""></span></div>
                 </div>
 
                 <!-- LED Konfigürasyonu (Geniş Kart) -->
@@ -1059,7 +1060,20 @@
             // Performans
             els.fpsVal.textContent = status.actual_fps ? status.actual_fps.toFixed(1) : '0.0';
             els.packetsSent.textContent = status.packets_sent || '0';
-            els.errorCount.textContent = status.errors || '0';
+            const errCount = status.errors || 0;
+            els.errorCount.textContent = errCount;
+            els.errorCount.style.color = errCount > 0 ? 'var(--danger-color)' : 'var(--text-muted)';
+
+            // Son hata satırı
+            const lastErrorRow = document.getElementById('last-error-row');
+            const lastErrorText = document.getElementById('last-error-text');
+            if (errCount > 0 && status.last_error) {
+                lastErrorRow.style.display = '';
+                lastErrorText.textContent = status.last_error;
+                lastErrorText.title = status.last_error;
+            } else {
+                lastErrorRow.style.display = 'none';
+            }
 
             // LED Bilgileri
             // Kullanıcı giriş yaparken alanların üzerine eski bilgilerin yazılmasını önlüyoruz (isEditingMode)

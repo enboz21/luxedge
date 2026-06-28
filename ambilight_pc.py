@@ -1085,45 +1085,49 @@ def is_fullscreen():
         _fullscreen_cache['time'] = now
         return result_val
 
-def average_color(img):
-    """Bölgesel ortalama rengi hesaplar"""
-    arr = np.array(img).reshape(-1, 3)
-    
-    # Tüm piksellerin doğrudan ortalamasını al
-    return tuple(np.mean(arr, axis=0).astype(int))
-
 def grab_edge_colors(top_leds, bottom_leds, left_leds, right_leds, edge_width, edge_offset, sct):
-    """Ekran kenarlarından renkleri toplar"""
+    """Ekran kenarlarından renkleri toplar (Saf NumPy - Yüksek Performanslı)"""
     monitor = sct.monitors[1]
     screenshot = sct.grab(monitor)
-    img = Image.frombytes("RGB", screenshot.size, screenshot.rgb)
+    # PIL'e dönüşüm yerine direkt NumPy dizisi - çok daha hızlı
+    # mss BGRA formatında döndürür, biz RGB istiyoruz: [:, :, 2::-1]
+    img = np.frombuffer(screenshot.bgra, dtype=np.uint8).reshape(screenshot.height, screenshot.width, 4)[:, :, 2::-1]
 
-    w, h = img.size
+    h, w, _ = img.shape
     final_colors = []
 
+    def region_avg(arr_slice):
+        """NumPy slice'ından ortalama RGB rengi döndürür"""
+        reshaped = arr_slice.reshape(-1, 3)
+        return tuple(np.mean(reshaped, axis=0).astype(int))
+
     # 1) RIGHT side (bottom → top)
+    right_strip = img[:, w - edge_width - edge_offset : w - edge_offset if edge_offset > 0 else w, :]
     for i in range(right_leds):
         y1 = int((right_leds - 1 - i) * h / right_leds)
         y2 = int((right_leds - i) * h / right_leds)
-        final_colors.append(average_color(img.crop((w - edge_width - edge_offset, y1, w - edge_offset, y2))))
+        final_colors.append(region_avg(right_strip[y1:y2, :, :]))
 
     # 2) TOP side (right → left)
+    top_strip = img[edge_offset : edge_width + edge_offset, :, :]
     for i in range(top_leds):
         x1 = int((top_leds - 1 - i) * w / top_leds)
         x2 = int((top_leds - i) * w / top_leds)
-        final_colors.append(average_color(img.crop((x1, edge_offset, x2, edge_width + edge_offset))))
+        final_colors.append(region_avg(top_strip[:, x1:x2, :]))
 
     # 3) LEFT side (top → bottom)
+    left_strip = img[:, edge_offset : edge_width + edge_offset, :]
     for i in range(left_leds):
         y1 = int(i * h / left_leds)
         y2 = int((i + 1) * h / left_leds)
-        final_colors.append(average_color(img.crop((edge_offset, y1, edge_width + edge_offset, y2))))
+        final_colors.append(region_avg(left_strip[y1:y2, :, :]))
 
     # 4) BOTTOM side (left → right)
+    bottom_strip = img[h - edge_width - edge_offset : h - edge_offset if edge_offset > 0 else h, :, :]
     for i in range(bottom_leds):
         x1 = int(i * w / bottom_leds)
         x2 = int((i + 1) * w / bottom_leds)
-        final_colors.append(average_color(img.crop((x1, h - edge_width - edge_offset, x2, h - edge_offset))))
+        final_colors.append(region_avg(bottom_strip[:, x1:x2, :]))
 
     return final_colors
 
