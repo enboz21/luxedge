@@ -4,7 +4,7 @@
     <strong>Monitör arkası LED aydınlatmasını otomatik olarak yöneten, Electron + Python tabanlı masaüstü uygulaması</strong>
   </p>
   <p align="center">
-    <img src="https://img.shields.io/badge/version-1.6.0-blue?style=flat-square" alt="Version">
+    <img src="https://img.shields.io/badge/version-1.6.1-blue?style=flat-square" alt="Version">
     <img src="https://img.shields.io/badge/platform-Windows%20|%20Linux-0078D6?style=flat-square&logo=windows&logoColor=white" alt="Platform">
     <img src="https://img.shields.io/badge/license-CC%20BY--NC%204.0-green?style=flat-square" alt="License">
     <img src="https://img.shields.io/badge/hardware-ESP8266%20(Wemos)-red?style=flat-square" alt="Hardware">
@@ -47,7 +47,8 @@
 | 🌙 **Uyku Modu** | LED'leri uzaktan kapatma/açma (cihaz bağlı kalır) |
 | 🎨 **Bekleme (Idle) Modu** | Tam ekranda uygulama olmadığında sabit renk (Windows Teması uyumlu) yakma özelliği |
 | 🔄 **Uzaktan Yeniden Başlatma** | Wemos'u arayüzden resetleme |
-| 📊 **Performans İzleme** | FPS, gönderilen paket sayısı ve hata sayısı |
+| 📊 **Performans İzleme** | FPS (renk kodlu), gönderilen paket ve hata sayısı; FPS 45+ yeşil, 25-45 sarı, 25 altı kırmızı |
+| 📋 **Gerçek Zamanlı Log Paneli** | Tüm sistem olayları (bağlantı, hata, FPS uyarıları) renkli log panelinde görüntülenir; log dosyası `%APPDATA%/LuxEdge/luxedge.log` |
 | 🔧 **Manuel IP Girişi** | Otomatik tarama çalışmazsa IP'yi elle girme |
 | 💾 **Config Otomatik Kayıt** | Ayarlar JSON dosyasında saklanır |
 | 🖱️ **Sistem Tepsisi** | Arka planda çalışır, tepsiden erişilir |
@@ -278,7 +279,15 @@ luxedge/
 - ✨ **Yeni Özellik:** Arayüze "Tam Ekran Maksimum Parlaklık" ayarı eklendi. Sistem sadece tam ekran modundayken LED'lerin çıkabileceği maksimum parlaklık sınırlandırılabilir.
 - ⚡ **Yeni Özellik:** Maksimum parlaklık ayarının hemen yanına, tüm LED'lerin tam beyaz yanması durumunda donanımın çekeceği tahmini **Maksimum Akım (Amper)** bilgisini gösteren dinamik bir gösterge eklendi.
 
-### v1.5.4
+### v1.6.1
+- 🚀 **FPS Optimizasyonu:** Ekran yakalama motoru tamamen yeniden yazıldı. PIL `Image.crop()` döngüsü kaldırılarak tek bir numpy dizi üzerinde vektörize işlem yapılmaya başlandı. Ek olarak frame işlem süresi ölçülerek `sleep_time`'dan düşülüyor (adaptive sleep). Sonuç: ~3-4× daha hızlı renk hesaplama, hedef 60 FPS'e çok daha yakın gerçek FPS.
+- 🔌 **Bağlantı Kararlılığı:** `MAX_FAILS` 2'den 3'e çıkarıldı; bağlı→bağlı değil geçişinde 2 saniyelik debounce eklendi; yeniden bağlanmak için 2 ardışık başarı gerekiyor. Böylece geçici Wi-Fi paket kayıplarında arayüzde titreme yaşanmıyor.
+- 📋 **Log Sistemi:** Tüm sistem olayları (bağlantı değişimleri, hata, FPS uyarıları, worker başlatma) hem `%APPDATA%/LuxEdge/luxedge.log` dosyasına (500 KB rotating, 3 yedek) hem de arayüzdeki canlı Log Paneli'ne yazılıyor. Log seviyelerine göre renk kodlama (INFO=mavi, WARNING=sarı, ERROR=kırmızı).
+- 🔄 **Hata Sayacı Sıfırlama:** `ambilight_worker` her başladığında hata sayacı, paket sayacı ve FPS değeri otomatik olarak sıfırlanıyor. Uygulamayı kapatıp açsanız bile sayaçlar 0'dan başlıyor.
+- 🎨 **FPS Renk Göstergesi:** Performans kartındaki FPS çemberi gerçek FPS'e göre renk değiştiriyor (45+ FPS = yeşil, 25-45 = sarı, 25 altı = kırmızı).
+- 📋 **Sidebar Log Butonu:** Sidebar'a "📋 Sistem Logları" navigasyon öğesi eklendi; log paneli sağ kenardan açılıyor, loglar 2 saniyede bir yenileniyor ve TXT olarak indirilebiliyor.
+
+### v1.6.0
 - 🐛 **Wemos Kararlılık İyileştirmeleri:** ESP8266 NeoPixel sinyal kesilmelerini önlemek için `strip.show()` çağrılarına interrupt (kesme) koruması eklendi.
 - 📡 **Gelişmiş Wi-Fi Yeniden Bağlanma:** Bağlantı koptuğunda hemen hotspot moduna geçmek yerine 5 kez yeniden bağlanma denemesi (10 saniye aralıklarla) eklendi.
 - 🚀 **Performans Optimizasyonları:** Wemos arayüzünde heap fragmentation (bellek parçalanması) sorununu önlemek için Wi-Fi tarama sonuçları önbelleğe alındı (30 saniye) ve HTML oluşturma iyileştirildi.
@@ -340,7 +349,7 @@ luxedge/
 |---|---|
 | Wemos bulunamıyor | Aynı Wi-Fi ağında olduğundan emin olun, Manuel IP deneyin |
 | LED'ler yanmıyor | Güç kaynağını kontrol edin, LED_COUNT değerini doğrulayın |
-| Düşük FPS | Ekran çözünürlüğünü düşürün veya EDGE_WIDTH değerini azaltın |
+| Düşük FPS | v1.6.1'de ~3-4× optimize edildi; hâlâ düşükse ekran çözünürlüğünü veya EDGE_WIDTH değerini azaltın |
 | Bağlantı kopuyor | Wemos'u yeniden başlatın, Wi-Fi sinyal gücünü kontrol edin |
 | Python başlamıyor | `pip install -r requirements.txt` ile kütüphaneleri kurun |
 

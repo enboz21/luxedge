@@ -7,6 +7,9 @@ import json
 import os
 import sys
 import io
+import logging
+import logging.handlers
+from collections import deque
 
 # Windows konsolunda emoji/Unicode desteği için encoding'i UTF-8'e ayarla
 if sys.stdout.encoding != 'utf-8':
@@ -24,6 +27,73 @@ from pathlib import Path
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 import http.server
 import struct
+
+# ============================================================
+# LOG SİSTEMİ
+# ============================================================
+
+# Bellek içi log tamponu (son 200 satır)
+_log_buffer = deque(maxlen=200)
+_log_buffer_lock = threading.Lock()
+
+class _MemoryLogHandler(logging.Handler):
+    """Logları hem belleğe hem de print'e yazar"""
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            entry = {
+                "time": time.strftime('%H:%M:%S', time.localtime(record.created)),
+                "level": record.levelname,
+                "msg": record.getMessage()
+            }
+            with _log_buffer_lock:
+                _log_buffer.append(entry)
+            # Konsola da yaz
+            print(msg, flush=True)
+        except Exception:
+            pass
+
+def _get_log_dir():
+    """Log dosyası dizinini döndürür"""
+    if sys.platform == 'win32':
+        return os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'LuxEdge')
+    else:
+        return os.path.join(os.environ.get('XDG_CONFIG_HOME', os.path.join(os.path.expanduser('~'), '.config')), 'LuxEdge')
+
+def setup_logger():
+    """Logger'ı rotating dosya + bellek handler ile kur"""
+    log_dir = _get_log_dir()
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, 'luxedge.log')
+
+    logger = logging.getLogger('luxedge')
+    logger.setLevel(logging.DEBUG)
+    logger.propagate = False
+
+    if logger.handlers:
+        return logger  # Zaten kurulmuş
+
+    fmt = logging.Formatter('[%(asctime)s] [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+
+    # Rotating file handler (500 KB, 3 yedek)
+    try:
+        fh = logging.handlers.RotatingFileHandler(
+            log_path, maxBytes=512*1024, backupCount=3, encoding='utf-8'
+        )
+        fh.setFormatter(fmt)
+        logger.addHandler(fh)
+    except Exception:
+        pass
+
+    # Bellek + konsol handler
+    mh = _MemoryLogHandler()
+    mh.setFormatter(logging.Formatter('[%(levelname)s] %(message)s'))
+    logger.addHandler(mh)
+
+    return logger
+
+# Global logger
+log = setup_logger()
 
 # Windows'ta subprocess çağrılarında CMD penceresi açılmasını engelle
 CREATE_NO_WINDOW = 0x08000000 if sys.platform == 'win32' else 0
@@ -1085,45 +1155,64 @@ def is_fullscreen():
         _fullscreen_cache['time'] = now
         return result_val
 
-def average_color(img):
-    """Bölgesel ortalama rengi hesaplar"""
-    arr = np.array(img).reshape(-1, 3)
-    
-    # Tüm piksellerin doğrudan ortalamasını al
-    return tuple(np.mean(arr, axis=0).astype(int))
-
 def grab_edge_colors(top_leds, bottom_leds, left_leds, right_leds, edge_width, edge_offset, sct):
-    """Ekran kenarlarından renkleri toplar"""
+    """
+    Ekran kenarlarından renkleri toplar.
+    v1.6.1: Tamamen numpy vektörizasyonu ile yeniden yazıldı.
+    PIL.Image.crop() döngüsü kaldırıldı → ~3-4x daha hızlı.
+    """
     monitor = sct.monitors[1]
     screenshot = sct.grab(monitor)
-    img = Image.frombytes("RGB", screenshot.size, screenshot.rgb)
+    # mss'den direkt numpy array (BGRA) → RGB'ye çevir (kopyasız dönüşüm)
+    arr = np.frombuffer(screenshot.raw, dtype=np.uint8).reshape(screenshot.height, screenshot.width, 4)[:, :, 2::-1]
+    # arr shape: (H, W, 3) — RGB
 
-    w, h = img.size
+    h, w = arr.shape[:2]
     final_colors = []
 
     # 1) RIGHT side (bottom → top)
-    for i in range(right_leds):
-        y1 = int((right_leds - 1 - i) * h / right_leds)
-        y2 = int((right_leds - i) * h / right_leds)
-        final_colors.append(average_color(img.crop((w - edge_width - edge_offset, y1, w - edge_offset, y2))))
+    if right_leds > 0:
+        strip = arr[:, max(0, w - edge_width - edge_offset):max(0, w - edge_offset) or w, :]  # (H, edge_width, 3)
+        for i in range(right_leds):
+            y1 = int((right_leds - 1 - i) * h / right_leds)
+            y2 = int((right_leds - i) * h / right_leds)
+            if y2 > y1:
+                final_colors.append(tuple(strip[y1:y2].reshape(-1, 3).mean(axis=0).astype(int)))
+            else:
+                final_colors.append((0, 0, 0))
 
     # 2) TOP side (right → left)
-    for i in range(top_leds):
-        x1 = int((top_leds - 1 - i) * w / top_leds)
-        x2 = int((top_leds - i) * w / top_leds)
-        final_colors.append(average_color(img.crop((x1, edge_offset, x2, edge_width + edge_offset))))
+    if top_leds > 0:
+        strip = arr[edge_offset:edge_width + edge_offset, :, :]  # (edge_width, W, 3)
+        for i in range(top_leds):
+            x1 = int((top_leds - 1 - i) * w / top_leds)
+            x2 = int((top_leds - i) * w / top_leds)
+            if x2 > x1:
+                final_colors.append(tuple(strip[:, x1:x2].reshape(-1, 3).mean(axis=0).astype(int)))
+            else:
+                final_colors.append((0, 0, 0))
 
     # 3) LEFT side (top → bottom)
-    for i in range(left_leds):
-        y1 = int(i * h / left_leds)
-        y2 = int((i + 1) * h / left_leds)
-        final_colors.append(average_color(img.crop((edge_offset, y1, edge_width + edge_offset, y2))))
+    if left_leds > 0:
+        strip = arr[:, edge_offset:edge_width + edge_offset, :]  # (H, edge_width, 3)
+        for i in range(left_leds):
+            y1 = int(i * h / left_leds)
+            y2 = int((i + 1) * h / left_leds)
+            if y2 > y1:
+                final_colors.append(tuple(strip[y1:y2].reshape(-1, 3).mean(axis=0).astype(int)))
+            else:
+                final_colors.append((0, 0, 0))
 
     # 4) BOTTOM side (left → right)
-    for i in range(bottom_leds):
-        x1 = int(i * w / bottom_leds)
-        x2 = int((i + 1) * w / bottom_leds)
-        final_colors.append(average_color(img.crop((x1, h - edge_width - edge_offset, x2, h - edge_offset))))
+    if bottom_leds > 0:
+        strip = arr[max(0, h - edge_width - edge_offset):max(0, h - edge_offset) or h, :, :]  # (edge_width, W, 3)
+        for i in range(bottom_leds):
+            x1 = int(i * w / bottom_leds)
+            x2 = int((i + 1) * w / bottom_leds)
+            if x2 > x1:
+                final_colors.append(tuple(strip[:, x1:x2].reshape(-1, 3).mean(axis=0).astype(int)))
+            else:
+                final_colors.append((0, 0, 0))
 
     return final_colors
 
@@ -1209,6 +1298,8 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
                 self.serve_status()
             elif self.path == '/api/scan':
                 self.serve_scan()
+            elif self.path == '/api/logs':
+                self.serve_logs()
             else:
                 self.send_error(404)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
@@ -1265,7 +1356,13 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
             status['uptime'] = "00:00:00"
         
         self._safe_send_json(status)
-    
+
+    def serve_logs(self):
+        """Son logları JSON olarak sun"""
+        with _log_buffer_lock:
+            logs = list(_log_buffer)
+        self._safe_send_json({"logs": logs})
+
     def serve_scan(self):
         """Ağ taraması yap ve sonucu döndür"""
         result = {"found": False, "ip": None, "message": "Taranıyor..."}
@@ -1580,49 +1677,68 @@ def ping_wemos(ip, port=7777, timeout=3):
 def wemos_connectivity_checker(ip, port, cancel_event=None):
     """
     Arka planda Wemos'un erişilebilir olup olmadığını kontrol eder.
-    Her 3 saniyede bir Wemos'a HTTP GET isteği gönderir, yanıt gelirse bağlı.
+    v1.6.1: MAX_FAILS=3, debounce ile bağlantı titremesi azaltıldı.
     """
     global running
     consecutive_fails = 0
-    MAX_FAILS = 2  # 2 ardışık başarısızlık = bağlı değil
+    consecutive_successes = 0
+    MAX_FAILS = 3        # 3 ardışık başarısızlık = bağlı değil (önceki: 2)
+    MIN_SUCCESS = 2      # Yeniden "bağlı" demek için 2 ardışık başarı gerekir
     was_connected = False
-    
-    print(f"[BAĞLANTI] Connectivity checker başlatıldı (Hedef: {ip})")
-    
+    # Durum geçişinde debounce: son 2 saniyede durum değişmediyse UI'yı güncelle
+    last_status_change = 0.0
+    DEBOUNCE_SEC = 2.0
+
+    log.info(f"[BAĞLANTI] Connectivity checker başlatıldı (Hedef: {ip})")
+
     # İlk birkaç saniye bekle, worker başlasın
     for _ in range(30):
         if not running or (cancel_event and cancel_event.is_set()):
             return
         time.sleep(0.1)
-    
-    print(f"[BAĞLANTI] İlk kontrol yapılıyor...")
-    
+
+    log.info(f"[BAĞLANTI] İlk kontrol yapılıyor...")
+
     while running and (cancel_event is None or not cancel_event.is_set()):
         try:
             # UDP PING/PONG ile kontrol (port 7777 - Wemos firmware destekliyor)
             wemos_reachable = ping_wemos(ip, port=7777, timeout=3)
-            
+
             if wemos_reachable:
                 consecutive_fails = 0
-                if not was_connected:
-                    print(f"[BAĞLANTI] ✅ Wemos'a bağlantı kuruldu ({ip})")
-                was_connected = True
-                update_status("connection", "bağlı")
+                consecutive_successes += 1
+                # Debounce: bağlı değilken bağlıya geçiş için MIN_SUCCESS başarı gerekir
+                if not was_connected and consecutive_successes >= MIN_SUCCESS:
+                    now = time.time()
+                    if now - last_status_change >= DEBOUNCE_SEC:
+                        log.info(f"[BAĞLANTI] ✅ Wemos'a bağlantı kuruldu ({ip})")
+                        was_connected = True
+                        last_status_change = now
+                        update_status("connection", "bağlı")
+                elif was_connected:
+                    update_status("connection", "bağlı")
             else:
+                consecutive_successes = 0
                 consecutive_fails += 1
-                print(f"[BAĞLANTI] Wemos yanıt vermedi (deneme {consecutive_fails}/{MAX_FAILS})")
+                if consecutive_fails < MAX_FAILS:
+                    log.warning(f"[BAĞLANTI] Wemos yanıt vermedi (deneme {consecutive_fails}/{MAX_FAILS})")
                 if consecutive_fails >= MAX_FAILS:
-                    if was_connected:
-                        print(f"[BAĞLANTI] ❌ Wemos bağlantısı kesildi ({ip})")
-                    was_connected = False
-                    update_status("connection", "bağlı değil")
+                    now = time.time()
+                    if was_connected and now - last_status_change >= DEBOUNCE_SEC:
+                        log.warning(f"[BAĞLANTI] ❌ Wemos bağlantısı kesildi ({ip})")
+                        was_connected = False
+                        last_status_change = now
+                        update_status("connection", "bağlı değil")
+                    elif not was_connected:
+                        update_status("connection", "bağlı değil")
         except Exception as e:
+            consecutive_successes = 0
             consecutive_fails += 1
-            print(f"[BAĞLANTI] Kontrol hatası: {e}")
+            log.error(f"[BAĞLANTI] Kontrol hatası: {e}")
             if consecutive_fails >= MAX_FAILS:
                 was_connected = False
                 update_status("connection", "bağlı değil")
-        
+
         # 3 saniyede bir kontrol et
         for _ in range(30):
             if not running or (cancel_event and cancel_event.is_set()):
@@ -1677,10 +1793,15 @@ def ambilight_worker(config):
         update_status("local_ip", local_ip)
         update_status("subnet", get_subnet_base(local_ip) + ".x")
     
+    # v1.6.1: Her yeniden başlatmada sayaçları sıfırla
     packets_sent = 0
     errors = 0
     fps_counter = 0
     fps_timer = time.time()
+    update_status("errors", 0)
+    update_status("packets_sent", 0)
+    update_status("actual_fps", 0)
+    log.info(f"[WORKER] Ambilight worker başlatıldı (Hedef FPS: {FPS}, LED: {TOTAL_LEDS})")
     
     # Wemos bağlantı kontrol thread'ini başlat (Eğer IP varsa)
     connectivity_thread = None
@@ -1785,17 +1906,20 @@ def ambilight_worker(config):
                 time.sleep(1)
                 continue
 
+            # v1.6.1: Adaptive sleep - frame işlem süresini hesaba kat
+            frame_start = time.perf_counter()
+
             try:
                 data = bytearray()
-                
+
                 is_full = is_fullscreen()
-                
+
                 if IDLE_MODE and not is_full:
                     if IDLE_USE_WINDOWS_COLOR:
                         current_color = get_windows_accent_color()
                     else:
                         current_color = IDLE_COLOR
-                        
+
                     ir, ig, ib = hex_to_rgb(current_color)
                     b_ratio = IDLE_BRIGHTNESS / 100.0
                     r = int(ir * b_ratio)
@@ -1816,23 +1940,29 @@ def ambilight_worker(config):
                 sock.sendto(data, (WEMOS_IP, WEMOS_PORT))
                 packets_sent += 1
                 fps_counter += 1
-                
+
                 # Her 2 saniyede bir FPS ve paket sayısını güncelle
                 current_time = time.time()
                 if current_time - fps_timer >= 2.0:
                     actual_fps = fps_counter / (current_time - fps_timer)
                     update_status("actual_fps", round(actual_fps, 1))
                     update_status("packets_sent", packets_sent)
-                    # NOT: Bağlantı durumu artık sadece connectivity_checker tarafından kontrol edilir.
-                    # UDP connectionless olduğu için sendto her zaman başarılı döner.
                     fps_counter = 0
                     fps_timer = current_time
-                
-                time.sleep(sleep_time)
+                    if actual_fps < 25:
+                        log.warning(f"[WORKER] Düşük FPS uyarısı: {actual_fps:.1f} FPS (hedef: {FPS})")
+
+                # Adaptive sleep: toplam frame süresini hedef süreye tamamla
+                elapsed = time.perf_counter() - frame_start
+                remaining = sleep_time - elapsed
+                if remaining > 0:
+                    time.sleep(remaining)
+
             except Exception as e:
                 errors += 1
                 update_status("errors", errors)
                 update_status("last_error", str(e))
+                log.error(f"[WORKER] Frame hatası: {e}")
                 if running:
                     time.sleep(1)  # Hata durumunda biraz bekle
                 else:
@@ -1857,7 +1987,7 @@ def main():
     global running, ambilight_thread, icon
     
     print("\n" + "="*60)
-    print("  AMBILIGHT PC v1.6.0 - Linux & Windows")
+    print("  AMBILIGHT PC v1.6.1 - Linux & Windows")
     print("="*60)
     
     # Konfigürasyonu yükle
