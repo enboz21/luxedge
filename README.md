@@ -4,8 +4,8 @@
     <strong>Monitör arkası LED aydınlatmasını otomatik olarak yöneten, Electron + Python tabanlı masaüstü uygulaması</strong>
   </p>
   <p align="center">
-    <img src="https://img.shields.io/badge/version-1.6.1-blue?style=flat-square" alt="Version">
-    <img src="https://img.shields.io/badge/platform-Windows%20|%20Linux-0078D6?style=flat-square&logo=windows&logoColor=white" alt="Platform">
+    <img src="https://img.shields.io/badge/version-1.6.2-blue?style=flat-square" alt="Version">
+    <img src="https://img.shields.io/badge/platform-Windows-0078D6?style=flat-square&logo=windows&logoColor=white" alt="Platform">
     <img src="https://img.shields.io/badge/license-CC%20BY--NC%204.0-green?style=flat-square" alt="License">
     <img src="https://img.shields.io/badge/hardware-ESP8266%20(Wemos)-red?style=flat-square" alt="Hardware">
   </p>
@@ -80,9 +80,9 @@
 
 ## 💻 Yazılım Gereksinimleri
 
-- **İşletim Sistemi:** Windows 10/11 veya Linux (Ubuntu/Debian, Arch Linux, vb.)
+- **İşletim Sistemi:** Windows 10/11
 - **Node.js:** v18 veya üstü
-- **Python:** 3.10 veya üstü (Linux için `python3` ve `pip` yüklü olmalı)
+- **Python:** 3.10 veya üstü
 - **Python Kütüphaneleri:** `numpy`, `mss`, `Pillow`, `pystray`
 
 ---
@@ -142,33 +142,6 @@ npm run dist
 Bu işlem sonunda `dist/` klasörü içinde arkadaşınıza doğrudan gönderebileceğiniz **`LuxEdge Setup X.X.X.exe`** NSIS Kurulum dosyası oluşacaktır.
 
 > ⚠️ **Not:** Windows'ta code signing hatası alırsanız, `package.json`'da `"signAndEditExecutable": false` ayarının yapılı olduğundan emin olun.
-
----
-
-### 🐧 Linux İçin Derleme
-
-Linux ortamında (Arch, Ubuntu vb.) derleme yapmak için `.venv` (sanal ortam) oluşturduğunuzdan emin olun ve ardından tek bir script ile tüm işlemi bitirin:
-
-**1. PyInstaller'ı Sanal Ortamınıza Kurun:**
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install pyinstaller
-```
-
-**2. Derleme Betiğini Çalıştırın:**
-```bash
-./build-linux.sh
-```
-
-Bu script sırasıyla Python kodunu `lush_backend` olarak binary halinde derler ve Electron ile uygulamayı paketler. 
-
-**Çıktılar (Son Kullanıcıya Verilecek Dosyalar):**
-Derleme sonrası `dist/` klasörü içerisinde iki ana dağıtım dosyası oluşur. Arkadaşınızın/Karşı tarafın makine tipine göre şu dosyaları flaşınıza kopyalayıp verebilirsiniz:
-
-- **`.AppImage` (Örn: `LuxEdge-1.6.0.AppImage`):** Tak ve çalıştır (Portable). Sistemde hiçbir şey kurulu olmadan sadece çift tıklayarak çalışır. 
-- **`.pacman` (Örn: `luxedge-1.6.0.pacman`):** Arch Linux kullanıcılarının sistemlerine resmi bir program gibi kurmaları içindir (`sudo pacman -U dosyaadi.pacman`).
-- **`.deb`:** Ubuntu/Debian tabanlı sistemlere kalıcı kurmak içindir (`sudo dpkg -i dosyaadi.deb`).
 
 ---
 
@@ -269,7 +242,12 @@ luxedge/
 
 ## 📝 Sürüm Geçmişi
 
-### v1.6.0 (Güncel)
+### v1.6.2 (Güncel)
+- 🎚️ **Hedef FPS Ayarı:** Web arayüzüne canlı "Hedef FPS" slider'ı eklendi (10-60 FPS). Artık Wemos'un Wi-Fi yükünü azaltmak ve bağlantıyı rahatlatmak için kare hızını düşürebilirsiniz.
+- ⏱️ **Windows Zamanlayıcı Hassasiyeti:** Windows platformunda milisaniyelik uykuların (`time.sleep`) kararlı çalışması için Windows Multimedia Timer API (`timeBeginPeriod(1)`) entegre edildi. Hedef FPS değerine milisaniyelik tam doğrulukla kilitlenir.
+- 🎨 **Dinamik Performans Çemberi:** Arayüzdeki FPS çemberinin rengi ve doluluk yüzdesi artık sabit 60 FPS'e göre değil, senin ayarladığın hedef FPS'e göre dinamik olarak güncellenir.
+
+### v1.6.0
 - ✨ **Yeni Özellik (OTA Güncelleme):** Wemos cihazını bilgisayara kabloyla bağlamaya gerek kalmadan, doğrudan Wi-Fi üzerinden (uygulama arayüzünden) güncelleyebilme imkanı eklendi.
 - 🐛 **Kritik Stabilite Çözümleri:** Wemos'un çalışırken aniden kapanıp açılmasına (watchdog timer reset) sebep olan donanım kesme (`noInterrupts`) çakışmaları tamamen giderildi. 
 - 📡 **Geliştirilmiş Yeniden Bağlanma:** Anlık Wi-Fi kopmalarında cihazın pes edip hemen Hotspot moduna geçmesi engellendi; artık 120 saniye (2 dakika) boyunca ağa sürekli yeniden bağlanmaya çalışıyor.

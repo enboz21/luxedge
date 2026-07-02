@@ -307,13 +307,26 @@
             width: 120px;
             height: 120px;
             border-radius: 50%;
-            border: 4px solid var(--bg-card-hover);
-            border-top-color: var(--accent-color);
             display: flex;
             flex-direction: column;
             align-items: center;
             justify-content: center;
             position: relative;
+            background: conic-gradient(var(--fps-color, var(--accent-color)) calc(var(--pct, 0) * 1%), var(--bg-card-hover) 0);
+        }
+        .stat-circle::after {
+            content: '';
+            position: absolute;
+            top: 4px;
+            left: 4px;
+            right: 4px;
+            bottom: 4px;
+            border-radius: 50%;
+            background: var(--bg-card);
+            z-index: 1;
+        }
+        .stat-circle > * {
+            z-index: 2;
         }
 
         .stat-value {
@@ -620,9 +633,9 @@
             flex-shrink: 0;
         }
         /* FPS renk göstergesi */
-        .stat-circle.fps-good  { border-top-color: var(--success-color); }
-        .stat-circle.fps-warn  { border-top-color: var(--warning-color); }
-        .stat-circle.fps-bad   { border-top-color: var(--danger-color); }
+        .stat-circle.fps-good  { --fps-color: var(--success-color); }
+        .stat-circle.fps-warn  { --fps-color: var(--warning-color); }
+        .stat-circle.fps-bad   { --fps-color: var(--danger-color); }
         /* Bağlantı geçiş animasyonu */
         .status-dot {
             transition: background-color 1s ease, box-shadow 1s ease;
@@ -688,7 +701,7 @@
                     </a>
                 </div>
                 <div style="font-size: 11px; color: var(--text-muted); margin-top: 15px; text-align: center;">
-                    Versiyon 1.6.1
+                    Versiyon 1.6.2
                 </div>
             </div>
         </div>
@@ -741,7 +754,7 @@
                             <span class="stat-label">FPS</span>
                         </div>
                     </div>
-                    <div class="info-row"><span class="info-label">Hedef FPS</span><span class="info-value">60</span>
+                    <div class="info-row"><span class="info-label">Hedef FPS</span><span class="info-value" id="target-fps-display">60</span>
                     </div>
                     <div class="info-row"><span class="info-label">Paketler</span><span class="info-value"
                             id="packets-sent">0</span></div>
@@ -810,6 +823,15 @@
                             <span id="estimated_amper_val" style="font-size: 12px; color: var(--warning-color); font-weight: 600; background-color: rgba(210, 153, 34, 0.1); padding: 3px 8px; border-radius: 4px; border: 1px solid rgba(210, 153, 34, 0.2);" title="Tüm LED'ler tam beyaz renkte yandığında çekilecek tahmini maksimum akım miktarı.">~0.0A</span>
                         </div>
                         <p style="font-size: 11px; color: var(--text-muted); margin-top: 5px;">💡 Sadece oyun veya video <b>tam ekrandayken</b> LED'lerin çıkabileceği maksimum parlaklık seviyesini sınırlar (30-255).</p>
+                    </div>
+
+                    <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border-color);">
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <label for="target_fps" style="font-size: 13px; color: var(--text-secondary);">Hedef FPS:</label>
+                            <input type="range" id="target_fps" min="10" max="60" step="5" value="60" style="flex-grow: 1; max-width: 400px; accent-color: var(--accent-color); cursor: pointer;">
+                            <span id="target_fps_val" style="font-size: 13px; color: var(--text-primary); width: 55px;">60 FPS</span>
+                        </div>
+                        <p style="font-size: 11px; color: var(--text-muted); margin-top: 5px;">⚡ Daha düşük FPS (örn. 30), Wemos'un Wi-Fi bağlantısını rahatlatarak kesintileri azaltabilir. Değişiklik anında uygulanır.</p>
                     </div>
                 </div>
 
@@ -1006,12 +1028,20 @@
             idleBrightnessVal: document.getElementById('idle_brightness_val'),
             fullscreenMaxBrightness: document.getElementById('fullscreen_max_brightness'),
             fullscreenMaxBrightnessVal: document.getElementById('fullscreen_max_brightness_val'),
+            targetFps: document.getElementById('target_fps'),
+            targetFpsVal: document.getElementById('target_fps_val'),
             autostartToggle: document.getElementById('autostart_toggle')
         };
 
         if (els.idleBrightness) {
             els.idleBrightness.addEventListener('input', (e) => {
                 els.idleBrightnessVal.textContent = e.target.value + '%';
+            });
+        }
+
+        if (els.targetFps) {
+            els.targetFps.addEventListener('input', (e) => {
+                els.targetFpsVal.textContent = e.target.value + ' FPS';
             });
         }
         
@@ -1150,13 +1180,21 @@
             }, isConnected ? 500 : 2000); // Bağlanma hızlı, kopma yavaş (titreme önleme)
         }
 
-        function updateFpsColor(fps) {
+        function updateFpsColor(fps, targetFps = 60) {
             const circle = document.querySelector('.stat-circle');
             if (!circle) return;
             circle.classList.remove('fps-good', 'fps-warn', 'fps-bad');
-            if (fps >= 45)      circle.classList.add('fps-good');
-            else if (fps >= 25) circle.classList.add('fps-warn');
-            else                circle.classList.add('fps-bad');
+            
+            // Hedefe göre performans oranı (0.0 - 1.0)
+            const ratio = targetFps > 0 ? (fps / targetFps) : 0;
+            
+            // Daireyi doldurma yüzdesi (0 - 100)
+            const pct = Math.min(100, Math.round(ratio * 100));
+            circle.style.setProperty('--pct', pct);
+            
+            if (ratio >= 0.85)      circle.classList.add('fps-good');
+            else if (ratio >= 0.60) circle.classList.add('fps-warn');
+            else                    circle.classList.add('fps-bad');
         }
 
         function updateUI(status) {
@@ -1179,7 +1217,7 @@
             // Performans
             const fps = status.actual_fps ? parseFloat(status.actual_fps) : 0;
             els.fpsVal.textContent = fps.toFixed(1);
-            updateFpsColor(fps);
+            updateFpsColor(fps, status.fps || 60);
             els.packetsSent.textContent = status.packets_sent || '0';
             els.errorCount.textContent = status.errors || '0';
 
@@ -1217,6 +1255,13 @@
             if (status.fullscreen_max_brightness !== undefined && els.fullscreenMaxBrightness && document.activeElement !== els.fullscreenMaxBrightness && !isEditingMode) {
                 els.fullscreenMaxBrightness.value = status.fullscreen_max_brightness;
                 if (els.fullscreenMaxBrightnessVal) els.fullscreenMaxBrightnessVal.textContent = status.fullscreen_max_brightness;
+            }
+
+            if (status.fps !== undefined && els.targetFps && document.activeElement !== els.targetFps && !isEditingMode) {
+                els.targetFps.value = status.fps;
+                if (els.targetFpsVal) els.targetFpsVal.textContent = status.fps + ' FPS';
+                const display = document.getElementById('target-fps-display');
+                if (display) display.textContent = status.fps;
             }
         }  // updateUI sonu
 
@@ -1260,7 +1305,8 @@
                     idle_use_windows_color: els.idleUseWindowsColor && els.idleUseWindowsColor.checked,
                     idle_color: (els.idleColor && els.idleColor.value) || '#ff0000',
                     idle_brightness: (els.idleBrightness && parseInt(els.idleBrightness.value)) || 50,
-                    fullscreen_max_brightness: (els.fullscreenMaxBrightness && parseInt(els.fullscreenMaxBrightness.value)) || 255
+                    fullscreen_max_brightness: (els.fullscreenMaxBrightness && parseInt(els.fullscreenMaxBrightness.value)) || 255,
+                    fps: (els.targetFps && parseInt(els.targetFps.value)) || 60
                 };
 
                 await api.saveConfig(config);

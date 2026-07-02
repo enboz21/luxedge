@@ -18,6 +18,12 @@ if sys.stderr.encoding != 'utf-8':
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 if sys.platform == 'win32':
     import winreg
+    import ctypes
+    try:
+        # Windows zamanlayıcı çözünürlüğünü 1ms hassasiyete ayarla (Hassas sleep için)
+        ctypes.windll.winmm.timeBeginPeriod(1)
+    except Exception:
+        pass
 import threading
 import urllib.request
 import urllib.parse
@@ -1842,13 +1848,15 @@ def ambilight_worker(config):
                     new_idle_color = new_config.get("idle_color", IDLE_COLOR)
                     new_idle_brightness = new_config.get("idle_brightness", IDLE_BRIGHTNESS)
                     new_fullscreen_max_brightness = new_config.get("fullscreen_max_brightness", FULLSCREEN_MAX_BRIGHTNESS)
+                    new_fps = new_config.get("fps", FPS)
                     
                     if (new_top != TOP_LEDS or new_bottom != BOTTOM_LEDS or 
                         new_left != LEFT_LEDS or new_right != RIGHT_LEDS or 
                         new_width != EDGE_WIDTH or new_offset != EDGE_OFFSET or
                         new_idle_mode != IDLE_MODE or new_idle_color != IDLE_COLOR or new_idle_brightness != IDLE_BRIGHTNESS or
                         new_fullscreen_max_brightness != FULLSCREEN_MAX_BRIGHTNESS or
-                        new_idle_use_windows_color != IDLE_USE_WINDOWS_COLOR):
+                        new_idle_use_windows_color != IDLE_USE_WINDOWS_COLOR or
+                        new_fps != FPS):
                         old_total_leds = TOTAL_LEDS
                         
                         TOP_LEDS, BOTTOM_LEDS = new_top, new_bottom
@@ -1857,6 +1865,10 @@ def ambilight_worker(config):
                         IDLE_MODE, IDLE_COLOR, IDLE_BRIGHTNESS = new_idle_mode, new_idle_color, new_idle_brightness
                         FULLSCREEN_MAX_BRIGHTNESS = new_fullscreen_max_brightness
                         IDLE_USE_WINDOWS_COLOR = new_idle_use_windows_color
+                        if new_fps != FPS:
+                            FPS = new_fps
+                            sleep_time = 1.0 / FPS
+                            log.info(f"[CONFIG] Hedef FPS güncellendi: {FPS}")
                         TOTAL_LEDS = TOP_LEDS + BOTTOM_LEDS + LEFT_LEDS + RIGHT_LEDS
                         
                         # EĞER LED SAYISI AZALDIYSA: Cihaz üzerindeki eski, arkada kalan LED'leri söndürmek için Blackout paketi at.
@@ -1880,6 +1892,7 @@ def ambilight_worker(config):
                         update_status("idle_color", IDLE_COLOR)
                         update_status("idle_brightness", IDLE_BRIGHTNESS)
                         update_status("fullscreen_max_brightness", FULLSCREEN_MAX_BRIGHTNESS)
+                        update_status("fps", FPS)
                         print("✓ (Worker) LED / Kenar / Bekleme Modu Konfigürasyonları Canlı Olarak Güncellendi.")
                     
                     new_ip = new_config.get("wemos_ip", "")
@@ -1952,10 +1965,10 @@ def ambilight_worker(config):
                     if actual_fps < 25:
                         log.warning(f"[WORKER] Düşük FPS uyarısı: {actual_fps:.1f} FPS (hedef: {FPS})")
 
-                # Adaptive sleep: toplam frame süresini hedef süreye tamamla
+                # v1.6.2: Adaptive sleep - timeBeginPeriod(1) sayesinde 1ms hassasiyetle uyuyabiliriz
                 elapsed = time.perf_counter() - frame_start
                 remaining = sleep_time - elapsed
-                if remaining > 0:
+                if remaining >= 0.001:
                     time.sleep(remaining)
 
             except Exception as e:
@@ -1987,7 +2000,7 @@ def main():
     global running, ambilight_thread, icon
     
     print("\n" + "="*60)
-    print("  AMBILIGHT PC v1.6.1 - Linux & Windows")
+    print("  AMBILIGHT PC v1.6.2 - Linux & Windows")
     print("="*60)
     
     # Konfigürasyonu yükle
