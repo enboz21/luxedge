@@ -4,8 +4,8 @@
     <strong>Monitör arkası LED aydınlatmasını otomatik olarak yöneten, Electron + Python tabanlı masaüstü uygulaması</strong>
   </p>
   <p align="center">
-    <img src="https://img.shields.io/badge/version-1.6.0-blue?style=flat-square" alt="Version">
-    <img src="https://img.shields.io/badge/platform-Windows%20|%20Linux-0078D6?style=flat-square&logo=windows&logoColor=white" alt="Platform">
+    <img src="https://img.shields.io/badge/version-1.6.3-blue?style=flat-square" alt="Version">
+    <img src="https://img.shields.io/badge/platform-Windows-0078D6?style=flat-square&logo=windows&logoColor=white" alt="Platform">
     <img src="https://img.shields.io/badge/license-CC%20BY--NC%204.0-green?style=flat-square" alt="License">
     <img src="https://img.shields.io/badge/hardware-ESP8266%20(Wemos)-red?style=flat-square" alt="Hardware">
   </p>
@@ -41,13 +41,15 @@
 | Özellik | Açıklama |
 |---|---|
 | 🖥️ **Gerçek Zamanlı Ekran Yakalama** | Ekranın 4 kenarındaki renkleri ~60 FPS hızda analiz eder |
+| 🖥️ **Çoklu Monitör & Ekran Seçimi** | Çift/üçlü monitörlü sistemlerde LED'lerin takip edeceği ekranı arayüzden seçme imkanı |
 | 📡 **Otomatik Ağ Taraması** | Wemos cihazını ağda otomatik bulur (UDP Discovery) |
 | 🔌 **UDP PING/PONG Bağlantı Kontrolü** | Wemos'a gerçek zamanlı bağlantı durumu takibi |
 | 💡 **Esnek LED Konfigürasyonu** | Üst, alt, sol, sağ kenar LED sayılarını ayrı ayrı ayarlama |
 | 🌙 **Uyku Modu** | LED'leri uzaktan kapatma/açma (cihaz bağlı kalır) |
 | 🎨 **Bekleme (Idle) Modu** | Tam ekranda uygulama olmadığında sabit renk (Windows Teması uyumlu) yakma özelliği |
 | 🔄 **Uzaktan Yeniden Başlatma** | Wemos'u arayüzden resetleme |
-| 📊 **Performans İzleme** | FPS, gönderilen paket sayısı ve hata sayısı |
+| 📊 **Performans İzleme** | FPS (renk kodlu), gönderilen paket ve hata sayısı; FPS 45+ yeşil, 25-45 sarı, 25 altı kırmızı |
+| 📋 **Gerçek Zamanlı Log Paneli** | Tüm sistem olayları (bağlantı, hata, FPS uyarıları) renkli log panelinde görüntülenir; log dosyası `%APPDATA%/LuxEdge/luxedge.log` |
 | 🔧 **Manuel IP Girişi** | Otomatik tarama çalışmazsa IP'yi elle girme |
 | 💾 **Config Otomatik Kayıt** | Ayarlar JSON dosyasında saklanır |
 | 🖱️ **Sistem Tepsisi** | Arka planda çalışır, tepsiden erişilir |
@@ -79,9 +81,9 @@
 
 ## 💻 Yazılım Gereksinimleri
 
-- **İşletim Sistemi:** Windows 10/11 veya Linux (Ubuntu/Debian, Arch Linux, vb.)
+- **İşletim Sistemi:** Windows 10/11
 - **Node.js:** v18 veya üstü
-- **Python:** 3.10 veya üstü (Linux için `python3` ve `pip` yüklü olmalı)
+- **Python:** 3.10 veya üstü
 - **Python Kütüphaneleri:** `numpy`, `mss`, `Pillow`, `pystray`
 
 ---
@@ -113,6 +115,8 @@ pip install -r requirements.txt
    - `ESP8266WiFi` (dahili)
 5. Kodu Wemos'a yükleyin
 
+> ⚠️ **ÖNEMLİ:** `wemos_code/wemos_code.ino` dosyasında herhangi bir değişiklik yaptığınızda, Arduino IDE'den **`firmware_D2.bin`** dosyasını yeniden derleyip Wemos'a yüklemek zorundasınız. Aksi halde yeni özellikler veya değişiklikler Wemos'ta çalışmaz.
+
 ### 5. Uygulamayı Çalıştırın
 ```bash
 npm start
@@ -141,33 +145,6 @@ npm run dist
 Bu işlem sonunda `dist/` klasörü içinde arkadaşınıza doğrudan gönderebileceğiniz **`LuxEdge Setup X.X.X.exe`** NSIS Kurulum dosyası oluşacaktır.
 
 > ⚠️ **Not:** Windows'ta code signing hatası alırsanız, `package.json`'da `"signAndEditExecutable": false` ayarının yapılı olduğundan emin olun.
-
----
-
-### 🐧 Linux İçin Derleme
-
-Linux ortamında (Arch, Ubuntu vb.) derleme yapmak için `.venv` (sanal ortam) oluşturduğunuzdan emin olun ve ardından tek bir script ile tüm işlemi bitirin:
-
-**1. PyInstaller'ı Sanal Ortamınıza Kurun:**
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install pyinstaller
-```
-
-**2. Derleme Betiğini Çalıştırın:**
-```bash
-./build-linux.sh
-```
-
-Bu script sırasıyla Python kodunu `lush_backend` olarak binary halinde derler ve Electron ile uygulamayı paketler. 
-
-**Çıktılar (Son Kullanıcıya Verilecek Dosyalar):**
-Derleme sonrası `dist/` klasörü içerisinde iki ana dağıtım dosyası oluşur. Arkadaşınızın/Karşı tarafın makine tipine göre şu dosyaları flaşınıza kopyalayıp verebilirsiniz:
-
-- **`.AppImage` (Örn: `LuxEdge-1.6.0.AppImage`):** Tak ve çalıştır (Portable). Sistemde hiçbir şey kurulu olmadan sadece çift tıklayarak çalışır. 
-- **`.pacman` (Örn: `luxedge-1.6.0.pacman`):** Arch Linux kullanıcılarının sistemlerine resmi bir program gibi kurmaları içindir (`sudo pacman -U dosyaadi.pacman`).
-- **`.deb`:** Ubuntu/Debian tabanlı sistemlere kalıcı kurmak içindir (`sudo dpkg -i dosyaadi.deb`).
 
 ---
 
@@ -268,7 +245,20 @@ luxedge/
 
 ## 📝 Sürüm Geçmişi
 
-### v1.6.0 (Güncel)
+### v1.6.3 (Güncel)
+- 🖥️ **Çoklu Monitör & Hedef Ekran Desteği:** Kontrol paneline "🖥️ Hedef Monitör / Ekran Seçimi" açılır kutusu eklendi. Sisteminizdeki tüm fiziksel monitörler (çözünürlük ve birincil etiketleriyle) otomatik tespit edilir. Çift monitörlü kurulumlarda sanal masaüstünün (`monitors[0]`) taranması engellendi; tam ekranda sol/son LED'lerin sönük kalması veya yanmaması sorunu kökten çözüldü.
+- 🔴 **Wemos UDP Kararlılığı & Bellek Sızıntısı Çözümü:** `Udp.begin(UDP_PORT)` çağrısının `loop()` içinde her döngüde kontrolsüz tekrarlanması engellendi (`udpRunning` durumu eklendi). Bellek tükenmesi (heap fragmentation), paket kaybı ve Watchdog Timer (WDT) resetleri durduruldu.
+- 📡 **Hotspot Modu UDP İyileştirmesi:** Wemos Hotspot (`Wemos_Setup`) modundayken de UDP dinleyicisi başlatılarak ilk kurulumda otomatik cihaz bulma (Discovery) yanıtlarının her iki modda da kusursuz çalışması sağlandı.
+- ⚡ **60 FPS UART Bloklaması Kaldırıldı:** Her LED paketi alındığında çağrılan `Serial.println("LED verisi alındı")` kaldırıldı. Saniyede 60 seri port yazımının Wi-Fi stack'ini dondurması ve bağlantı koparması önlendi.
+- 🛡️ **Akıllı Bağlantı Kontrolü & Boş IP Koruması:** Ekrandan gerçek veri akışı varken (FPS > 1) Wemos'a her 3 saniyede gereksiz UDP PING ve HTTP GET istekleri atılması engellendi. Arayüzde ayar değişikliği sırasında boş IP gönderilerek kayıtlı Wemos IP'sinin silinmesi önlendi.
+- 🚀 **Port & Süreç Yönetimi:** Uygulama açılırken önceki oturumlardan kalan artık `lush_backend.exe` süreçleri otomatik temizlenir; port 8888 çakışmaları ve `'NoneType' object has no attribute 'monitors'` başlatma hatası tamamen çözüldü.
+
+### v1.6.2
+- 🎚️ **Hedef FPS Ayarı:** Web arayüzüne canlı "Hedef FPS" slider'ı eklendi (10-60 FPS). Artık Wemos'un Wi-Fi yükünü azaltmak ve bağlantıyı rahatlatmak için kare hızını düşürebilirsiniz.
+- ⏱️ **Windows Zamanlayıcı Hassasiyeti:** Windows platformunda milisaniyelik uykuların (`time.sleep`) kararlı çalışması için Windows Multimedia Timer API (`timeBeginPeriod(1)`) entegre edildi. Hedef FPS değerine milisaniyelik tam doğrulukla kilitlenir.
+- 🎨 **Dinamik Performans Çemberi:** Arayüzdeki FPS çemberinin rengi ve doluluk yüzdesi artık sabit 60 FPS'e göre değil, senin ayarladığın hedef FPS'e göre dinamik olarak güncellenir.
+
+### v1.6.0
 - ✨ **Yeni Özellik (OTA Güncelleme):** Wemos cihazını bilgisayara kabloyla bağlamaya gerek kalmadan, doğrudan Wi-Fi üzerinden (uygulama arayüzünden) güncelleyebilme imkanı eklendi.
 - 🐛 **Kritik Stabilite Çözümleri:** Wemos'un çalışırken aniden kapanıp açılmasına (watchdog timer reset) sebep olan donanım kesme (`noInterrupts`) çakışmaları tamamen giderildi. 
 - 📡 **Geliştirilmiş Yeniden Bağlanma:** Anlık Wi-Fi kopmalarında cihazın pes edip hemen Hotspot moduna geçmesi engellendi; artık 120 saniye (2 dakika) boyunca ağa sürekli yeniden bağlanmaya çalışıyor.
@@ -278,7 +268,15 @@ luxedge/
 - ✨ **Yeni Özellik:** Arayüze "Tam Ekran Maksimum Parlaklık" ayarı eklendi. Sistem sadece tam ekran modundayken LED'lerin çıkabileceği maksimum parlaklık sınırlandırılabilir.
 - ⚡ **Yeni Özellik:** Maksimum parlaklık ayarının hemen yanına, tüm LED'lerin tam beyaz yanması durumunda donanımın çekeceği tahmini **Maksimum Akım (Amper)** bilgisini gösteren dinamik bir gösterge eklendi.
 
-### v1.5.4
+### v1.6.1
+- 🚀 **FPS Optimizasyonu:** Ekran yakalama motoru tamamen yeniden yazıldı. PIL `Image.crop()` döngüsü kaldırılarak tek bir numpy dizi üzerinde vektörize işlem yapılmaya başlandı. Ek olarak frame işlem süresi ölçülerek `sleep_time`'dan düşülüyor (adaptive sleep). Sonuç: ~3-4× daha hızlı renk hesaplama, hedef 60 FPS'e çok daha yakın gerçek FPS.
+- 🔌 **Bağlantı Kararlılığı:** `MAX_FAILS` 2'den 3'e çıkarıldı; bağlı→bağlı değil geçişinde 2 saniyelik debounce eklendi; yeniden bağlanmak için 2 ardışık başarı gerekiyor. Böylece geçici Wi-Fi paket kayıplarında arayüzde titreme yaşanmıyor.
+- 📋 **Log Sistemi:** Tüm sistem olayları (bağlantı değişimleri, hata, FPS uyarıları, worker başlatma) hem `%APPDATA%/LuxEdge/luxedge.log` dosyasına (500 KB rotating, 3 yedek) hem de arayüzdeki canlı Log Paneli'ne yazılıyor. Log seviyelerine göre renk kodlama (INFO=mavi, WARNING=sarı, ERROR=kırmızı).
+- 🔄 **Hata Sayacı Sıfırlama:** `ambilight_worker` her başladığında hata sayacı, paket sayacı ve FPS değeri otomatik olarak sıfırlanıyor. Uygulamayı kapatıp açsanız bile sayaçlar 0'dan başlıyor.
+- 🎨 **FPS Renk Göstergesi:** Performans kartındaki FPS çemberi gerçek FPS'e göre renk değiştiriyor (45+ FPS = yeşil, 25-45 = sarı, 25 altı = kırmızı).
+- 📋 **Sidebar Log Butonu:** Sidebar'a "📋 Sistem Logları" navigasyon öğesi eklendi; log paneli sağ kenardan açılıyor, loglar 2 saniyede bir yenileniyor ve TXT olarak indirilebiliyor.
+
+### v1.6.0
 - 🐛 **Wemos Kararlılık İyileştirmeleri:** ESP8266 NeoPixel sinyal kesilmelerini önlemek için `strip.show()` çağrılarına interrupt (kesme) koruması eklendi.
 - 📡 **Gelişmiş Wi-Fi Yeniden Bağlanma:** Bağlantı koptuğunda hemen hotspot moduna geçmek yerine 5 kez yeniden bağlanma denemesi (10 saniye aralıklarla) eklendi.
 - 🚀 **Performans Optimizasyonları:** Wemos arayüzünde heap fragmentation (bellek parçalanması) sorununu önlemek için Wi-Fi tarama sonuçları önbelleğe alındı (30 saniye) ve HTML oluşturma iyileştirildi.
@@ -340,7 +338,7 @@ luxedge/
 |---|---|
 | Wemos bulunamıyor | Aynı Wi-Fi ağında olduğundan emin olun, Manuel IP deneyin |
 | LED'ler yanmıyor | Güç kaynağını kontrol edin, LED_COUNT değerini doğrulayın |
-| Düşük FPS | Ekran çözünürlüğünü düşürün veya EDGE_WIDTH değerini azaltın |
+| Düşük FPS | v1.6.1'de ~3-4× optimize edildi; hâlâ düşükse ekran çözünürlüğünü veya EDGE_WIDTH değerini azaltın |
 | Bağlantı kopuyor | Wemos'u yeniden başlatın, Wi-Fi sinyal gücünü kontrol edin |
 | Python başlamıyor | `pip install -r requirements.txt` ile kütüphaneleri kurun |
 

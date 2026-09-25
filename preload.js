@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('luxedge', {
 
     // Ayarlar
     saveConfig: (config) => ipcRenderer.invoke('save-config', config),
+    getLogs: () => ipcRenderer.invoke('get-logs'),
 
     // Uygulama
     restartApp: () => ipcRenderer.invoke('restart-app'),
@@ -22,6 +23,7 @@ contextBridge.exposeInMainWorld('luxedge', {
     restartWemos: () => ipcRenderer.invoke('wemos-restart'),
     toggleSleep: () => ipcRenderer.invoke('wemos-sleep'),
     resetWemosWifi: () => ipcRenderer.invoke('wemos-reset-wifi'),
+    testWemosConnection: () => ipcRenderer.invoke('test-wemos-connection'),
 
     // Otomatik Başlatma
     getAutoStart: () => ipcRenderer.invoke('get-autostart'),
