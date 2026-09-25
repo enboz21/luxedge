@@ -7,7 +7,7 @@
 #include <ArduinoOTA.h>
 #include <ESP8266HTTPUpdateServer.h>
 
-#define LED_PIN   3        // RX pin (GPIO3) - I2C'den bağımsız, toprağa uzak, güvenli
+#define LED_PIN   D2       // D2 pini (GPIO4) - Wemos D1 Mini
 #define LED_COUNT 74       // 34 + 0 + 20 + 20 (config ile eşleşmeli)
 #define UDP_PORT  7777
 #define DNS_PORT  53       // --- EKLENDİ: DNS Portu ---
@@ -27,6 +27,11 @@ Adafruit_NeoPixel strip(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
 ESP8266HTTPUpdateServer httpUpdater; // OTA HTTP güncelleyici nesnesi
 
 bool isHotspotMode = false;
+bool udpRunning = false;
+
+// WiFi reconnect yönetimi (global, connectToWiFi() içinden sıfırlanır)
+int reconnectCount = 0;
+unsigned long lastReconnectAttempt = 0;
 
 // Bekleme animasyonu değişkenleri
 unsigned long lastDataTime = 0;      // Son LED verisi zamanı
@@ -110,6 +115,7 @@ void startHotspot() {
 
   // Önce eski bağlantıları ve soketleri temizle
   Udp.stop();
+  udpRunning = false;
   server.stop();
   dnsServer.stop();
   WiFi.disconnect(true);
@@ -137,6 +143,8 @@ void startHotspot() {
   server.onNotFound(handleRoot); 
   
   server.begin();
+  Udp.begin(UDP_PORT);
+  udpRunning = true;
   
   isHotspotMode = true;
   
@@ -302,7 +310,7 @@ void connectToWiFi() {
   strip.show();
 
   int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 30) {
+  while (WiFi.status() != WL_CONNECTED && attempts < 60) {
     delay(500);
     Serial.print(".");
     attempts++;
@@ -315,6 +323,8 @@ void connectToWiFi() {
     Serial.println(WiFi.localIP());
     
     isHotspotMode = false;
+    reconnectCount = 0;
+    lastReconnectAttempt = 0;
     WiFi.setAutoReconnect(true);
     WiFi.persistent(true);
     
@@ -331,6 +341,7 @@ void connectToWiFi() {
     
     // UDP dinlemeye başla
     Udp.begin(UDP_PORT);
+    udpRunning = true;
     
     // HTTP sunucusunu normal modda da başlat
     server.on("/", handleRoot);
@@ -427,14 +438,18 @@ void loop() {
     
     // Hotspot modunda HTTP server'ı yönet
     server.handleClient();
-    
-    // UDP paketlerini de dinle (hotspot modunda)
-    int packetSize = Udp.parsePacket();
-    if (packetSize > 0) {
+
+    // UDP paketlerini dinle (birden fazla paket olabilir, hepsini işle)
+    while (true) {
+      int packetSize = Udp.parsePacket();
+      if (packetSize <= 0) break;
+
+      int len = packetSize;
+      if (len > 254) len = 254;
       char packet[255];
-      int len = Udp.read(packet, 254);
-      if (len > 0) {
-        packet[len] = 0;
+      int read = Udp.read(packet, len);
+      if (read > 0) {
+        packet[read] = 0;
         if (strstr(packet, "AMBLIGHT_DISCOVERY") != NULL) {
           IPAddress remoteIP = Udp.remoteIP();
           Udp.beginPacket(remoteIP, Udp.remotePort());
@@ -449,8 +464,7 @@ void loop() {
     ArduinoOTA.handle();
 
     // Normal modda WiFi reconnect yonetimi
-    static unsigned long lastReconnectAttempt = 0;
-    static int reconnectCount = 0;
+    // reconnectCount ve lastReconnectAttempt artık global (connectToWiFi'tan sıfırlanır)
 
     if (WiFi.status() != WL_CONNECTED) {
       unsigned long now = millis();
@@ -463,6 +477,9 @@ void loop() {
         WiFi.disconnect();
         delay(100);
         WiFi.begin(saved_ssid.c_str(), saved_password.c_str());
+        // WiFi kesildikten sonra Udp soketini de sıfırla
+        Udp.stop();
+        udpRunning = false;
       }
       if (reconnectCount >= 12) {
         Serial.println("12 deneme basarisiz. Hotspot moduna geciliyor...");
@@ -472,56 +489,77 @@ void loop() {
       }
     } else {
       reconnectCount = 0;
+      // Bağlantı varsa ve Udp henüz çalışmıyorsa başlat
+      if (!udpRunning) {
+        if (Udp.begin(UDP_PORT)) {
+          udpRunning = true;
+          Serial.println("UDP soketi başlatıldı (Port 7777)");
+        } else {
+          Serial.println("Udp.begin() basarisiz! Hotspot moduna geciliyor...");
+          startHotspot();
+          return;
+        }
+      }
     }
 
     // Normal mod: HTTP isteklerini de işle
     server.handleClient();
-    
-    // UDP paketlerini dinle
-    int packetSize = Udp.parsePacket();
-    if (packetSize > 0) {
-      char packetBuffer[255];
-      int len = Udp.read(packetBuffer, 254);
-      
-      if (len > 0) {
-        packetBuffer[len] = 0;
-      }
 
-      // 1. Discovery Kontrolü
-      if (strstr(packetBuffer, "AMBLIGHT_DISCOVERY") != NULL) {
-        IPAddress remoteIP = Udp.remoteIP();
-        int remotePort = Udp.remotePort();
-        
-        Udp.beginPacket(remoteIP, remotePort);
-        Udp.write("AMBLIGHT_RESPONSE:");
-        Udp.write(WiFi.localIP().toString().c_str());
-        Udp.endPacket();
-        
-        Serial.print("Discovery isteği geldi: ");
-        Serial.print(remoteIP);
-        Serial.print(" Port: ");
-        Serial.println(remotePort);
-      }
-      // 2. PING Kontrolü
-      else if (strcmp(packetBuffer, "PING") == 0) {
-        Udp.beginPacket(Udp.remoteIP(), Udp.remotePort());
-        Udp.write("PONG");
-        Udp.endPacket();
-      }
-      // 3. LED Verisi
-      else if (!isSleepMode && len >= 3 && len % 3 == 0) {
-        int numLeds = len / 3;
-        if(numLeds > LED_COUNT) numLeds = LED_COUNT;
-        
-        for (int i = 0; i < numLeds; i++) {
-          uint8_t r = packetBuffer[i * 3 + 0];
-          uint8_t g = packetBuffer[i * 3 + 1];
-          uint8_t b = packetBuffer[i * 3 + 2];
-          strip.setPixelColor(i, strip.Color(r, g, b));
+    // UDP paketlerini dinle (birden fazla paket olabilir, hepsini işle)
+    while (true) {
+      int packetSize = Udp.parsePacket();
+      if (packetSize <= 0) break;
+
+      int len = packetSize;
+      if (len > 512) len = 512;
+
+      char packetBuffer[513];
+      int read = Udp.read(packetBuffer, len);
+
+      if (read > 0) {
+        packetBuffer[read] = 0;
+
+        // 1. Discovery Kontrolü
+        if (strstr(packetBuffer, "AMBLIGHT_DISCOVERY") != NULL) {
+          IPAddress remoteIP = Udp.remoteIP();
+          int remotePort = Udp.remotePort();
+
+          Udp.beginPacket(remoteIP, remotePort);
+          Udp.write("AMBLIGHT_RESPONSE:");
+          Udp.write(WiFi.localIP().toString().c_str());
+          Udp.endPacket();
+
+          Serial.print("Discovery isteği geldi: ");
+          Serial.print(remoteIP);
+          Serial.print(" Port: ");
+          Serial.println(remotePort);
         }
-        strip.show();
-        lastDataTime = millis();
-        receivingData = true;
+        // 2. PING Kontrolü - Öncelikli işleme
+        else if (strcmp(packetBuffer, "PING") == 0) {
+          Udp.beginPacket(Udp.remoteIP(), Udp.remotePort());
+          Udp.write("PONG");
+          Udp.endPacket();
+          Serial.println("PING yanıtlandı");
+        }
+        // 3. LED Verisi - Sadece PING değilse
+        else if (!isSleepMode && len >= 3 && len % 3 == 0) {
+          int numLeds = len / 3;
+          if(numLeds > LED_COUNT) numLeds = LED_COUNT;
+
+          for (int i = 0; i < numLeds; i++) {
+            uint8_t r = packetBuffer[i * 3 + 0];
+            uint8_t g = packetBuffer[i * 3 + 1];
+            uint8_t b = packetBuffer[i * 3 + 2];
+            strip.setPixelColor(i, strip.Color(r, g, b));
+          }
+          strip.show();
+          lastDataTime = millis();
+          receivingData = true;
+          // Serial.println("LED verisi alındı"); // Performans için kaldırıldı (60fps bloklama önleme)
+        } else {
+          Serial.print("Tanınmayan paket, len:");
+          Serial.println(len);
+        }
       }
     }
 
@@ -529,10 +567,10 @@ void loop() {
       delay(10);
       return;
     }
-    
+
     if (millis() - lastDataTime > 500) {
       receivingData = false;
-      if (millis() - lastAnimUpdate > 80) {
+      if (millis() - lastAnimUpdate > 50) {  // 80ms yerine 50ms - daha duyarlı animasyon
         lastAnimUpdate = millis();
         strip.clear();
         uint8_t brightness[] = {255, 180, 120, 70, 35, 10};

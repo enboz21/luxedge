@@ -226,6 +226,74 @@
             box-shadow: 0 0 8px var(--success-color);
         }
 
+        .status-dot.warning {
+            background-color: var(--warning-color);
+            box-shadow: 0 0 8px var(--warning-color);
+        }
+
+        .status-dot.checking {
+            background-color: var(--accent-color);
+            box-shadow: 0 0 8px var(--accent-color);
+            animation: statusPulse 1s ease-in-out infinite;
+        }
+
+        @keyframes statusPulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.4; transform: scale(0.85); }
+        }
+
+        .connection-test-details {
+            margin-top: 12px;
+            padding: 10px 12px;
+            background-color: rgba(255, 255, 255, 0.02);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            border-radius: var(--radius-md);
+            display: none;
+        }
+
+        .connection-test-details.show {
+            display: block;
+        }
+
+        .connection-test-details .test-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 5px 0;
+            font-size: 12px;
+        }
+
+        .connection-test-details .test-row + .test-row {
+            border-top: 1px solid rgba(255, 255, 255, 0.04);
+        }
+
+        .connection-test-details .test-label {
+            color: var(--text-secondary);
+        }
+
+        .connection-test-details .test-value {
+            font-weight: 600;
+        }
+
+        .connection-test-details .test-value.ok {
+            color: var(--success-color);
+        }
+
+        .connection-test-details .test-value.fail {
+            color: var(--danger-color);
+        }
+
+        .connection-test-details .test-value.checking {
+            color: var(--accent-color);
+        }
+
+        .connection-test-details .test-message {
+            color: var(--text-muted);
+            font-size: 11px;
+            margin-top: 6px;
+            line-height: 1.4;
+        }
+
         /* Grid Layout */
         .dashboard-grid {
             display: grid;
@@ -680,7 +748,7 @@
             </div>
 
             <nav class="nav-menu">
-                <a class="nav-item active">
+                <a class="nav-item active" onclick="showDashboard()">
                     <span>📊</span> Genel Durum
                 </a>
                 <a class="nav-item" onclick="forceScan()">
@@ -701,7 +769,7 @@
                     </a>
                 </div>
                 <div style="font-size: 11px; color: var(--text-muted); margin-top: 15px; text-align: center;">
-                    Versiyon 1.6.2
+                    Versiyon 1.6.3
                 </div>
             </div>
         </div>
@@ -729,9 +797,14 @@
                 <div class="card">
                     <div class="card-header">
                         <div class="card-title"><span>🔌</span> Bağlantı</div>
-                        <button class="btn btn-primary" onclick="forceScan()"
-                            title="Ağdaki Wemos cihazını otomatik olarak arar ve bulduğunda IP'sini kaydeder"
-                            style="padding: 4px 8px; font-size: 11px;">🔍 Tara</button>
+                        <div style="display: flex; gap: 8px;">
+                            <button class="btn btn-primary" onclick="testWemosConnection()"
+                                title="Wemos'a UDP PING/PONG ve HTTP /status ile ayrı ayrı bağlantı test eder"
+                                style="padding: 4px 8px; font-size: 11px;">🧪 Test Et</button>
+                            <button class="btn" onclick="forceScan()"
+                                title="Ağdaki Wemos cihazını otomatik olarak arar ve bulduğunda IP'sini kaydeder"
+                                style="padding: 4px 8px; font-size: 11px;">🔍 Tara</button>
+                        </div>
                     </div>
                     <div class="info-row"><span class="info-label">Durum</span><span class="info-value"
                             id="conn-status">-</span></div>
@@ -741,6 +814,19 @@
                             id="wemos-port">-</span></div>
                     <div class="info-row"><span class="info-label">Yerel IP</span><span class="info-value"
                             id="local-ip">-</span></div>
+
+                    <!-- Bağlantı Test Detayları -->
+                    <div id="connection-test-details" class="connection-test-details">
+                        <div class="test-row">
+                            <span class="test-label" title="Wemos UDP port 7777'e PING gönderilir, PONG yanıtı beklenir. LED verisinin ana iletişim protokolüdür.">📡 UDP PING/PONG</span>
+                            <span id="udp-test-result" class="test-value checking">Bekleniyor</span>
+                        </div>
+                        <div class="test-row">
+                            <span class="test-label" title="Wemos HTTP /status endpoint'i kontrol edilir. UDP engelliyse bağlantı doğrulama için yedek protokoldür.">🌐 HTTP /status</span>
+                            <span id="http-test-result" class="test-value checking">Bekleniyor</span>
+                        </div>
+                        <div class="test-message" id="connection-test-message">Test için "🧪 Test Et" butonuna basın.</div>
+                    </div>
                 </div>
 
                 <!-- Performans Kartı -->
@@ -784,6 +870,13 @@
 
                         <!-- Ayarlar -->
                         <div style="flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                            <div style="grid-column: 1 / -1;">
+                                <label style="font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; display: block;"
+                                    title="LED şeridinin arkasına takılı olduğu ekranı seçin. Ambilight yalnızca bu ekranın kenarlarını tarar.">🖥️ Hedef Monitör / Ekran Seçimi</label>
+                                <select id="led_monitor_index" class="input-control" style="cursor: pointer; margin-bottom: 0;">
+                                    <option value="1">Monitör 1 (Yükleniyor...)</option>
+                                </select>
+                            </div>
                             <div>
                                 <label style="font-size: 12px; color: var(--text-secondary);">Üst Kenar</label>
                                 <input type="number" id="top_leds" class="input-control" value="0">
@@ -999,6 +1092,9 @@
         // IPC API Erişimi
         const api = window.luxedge;
 
+        // Firmware hard limit - wemos_code.ino'daki LED_COUNT ile eşleşmeli
+        const MAX_LED_COUNT = 74;
+
         // --- DOM Elements ---
         const els = {
             statusDot: document.getElementById('status-dot'),
@@ -1020,6 +1116,7 @@
             edgeWidth: document.getElementById('edge_width'),
             edgeOffset: document.getElementById('edge_offset'),
             manualIpInput: document.getElementById('manual-ip-input'),
+            ledMonitorIndex: document.getElementById('led_monitor_index'),
 
             idleMode: document.getElementById('idle_mode'),
             idleUseWindowsColor: document.getElementById('idle_use_windows_color'),
@@ -1087,7 +1184,8 @@
         document.addEventListener('DOMContentLoaded', () => {
             const configInputs = [
                 els.topLeds, els.bottomLeds, els.leftLeds, els.rightLeds,
-                els.edgeWidth, els.edgeOffset, els.idleMode, els.idleUseWindowsColor, els.idleColor, els.idleBrightness, els.fullscreenMaxBrightness
+                els.edgeWidth, els.edgeOffset, els.idleMode, els.idleUseWindowsColor, els.idleColor, els.idleBrightness, els.fullscreenMaxBrightness, els.targetFps,
+                els.ledMonitorIndex
             ];
 
             configInputs.forEach(input => {
@@ -1164,19 +1262,56 @@
             }
         }
 
+        function showDashboard() {
+            document.querySelectorAll('.nav-item').forEach(item => item.classList.remove('active'));
+            const dashboard = document.querySelector('.nav-item');
+            if (dashboard) dashboard.classList.add('active');
+            const main = document.querySelector('.main-content');
+            if (main) main.scrollTop = 0;
+            fetchStatus();
+        }
+
         // --- Status Update ---
         // Bağlantı debounce: anlık geçişleri yumuşat
         let _lastConnStatus = null;
         let _connDebounceTimer = null;
 
-        function setConnectionStatus(isConnected, isRunning) {
+        function setConnectionStatus(isConnected, isRunning, udpOk = false, httpOk = false) {
+            // Determine status for status dot
+            let dotClass = 'status-dot';
+            let statusText = 'Sistem Aktif';
+
+            if (!isConnected) {
+                if (udpOk && !httpOk) {
+                    dotClass = 'status-dot'; // UDP only - LED veri akışı için bağlı sayılır
+                    statusText = 'UDP ile bağlı (HTTP kopuk)';
+                } else if (!udpOk && httpOk) {
+                    dotClass = 'status-dot warning'; // HTTP only
+                    statusText = 'HTTP ile bağlı (UDP kopuk)';
+                } else if (!udpOk && !httpOk) {
+                    dotClass = 'status-dot'; // Both failed
+                    statusText = 'Bağlantı yok';
+                }
+            } else {
+                if (udpOk && httpOk) {
+                    dotClass = 'status-dot active'; // Both working
+                    statusText = 'Tam bağlantı (UDP + HTTP)';
+                } else if (udpOk) {
+                    dotClass = 'status-dot warning'; // UDP only
+                    statusText = 'UDP bağlantısı aktif';
+                } else {
+                    dotClass = 'status-dot'; // Should not happen but just in case
+                    statusText = 'HTTP ile bağlı';
+                }
+            }
+
             const newStatus = isConnected ? 'connected' : (isRunning ? 'searching' : 'stopped');
             if (newStatus === _lastConnStatus) return; // Değişim yoksa dokunma
             clearTimeout(_connDebounceTimer);
             _connDebounceTimer = setTimeout(() => {
                 _lastConnStatus = newStatus;
-                els.statusDot.className = isConnected ? 'status-dot active' : 'status-dot';
-                els.statusText.textContent = isConnected ? 'Sistem Aktif' : (isRunning ? 'Aranıyor...' : 'Durduruldu');
+                els.statusDot.className = dotClass;
+                els.statusText.textContent = statusText;
             }, isConnected ? 500 : 2000); // Bağlanma hızlı, kopma yavaş (titreme önleme)
         }
 
@@ -1203,6 +1338,7 @@
             const isConnected = status.connection === 'bağlı' || isSendingData;
             const isRunning = status.running;
 
+            // UDP/HTTP durumundan çıkarılan ayrıntılı bilgi (connText'e dahil edilmez, test butonunda gösterilir)
             setConnectionStatus(isConnected, isRunning);
 
             // Bağlantı kartındaki durum yazısı
@@ -1232,6 +1368,23 @@
                 if (status.right_leds !== undefined && document.activeElement !== els.rightLeds) els.rightLeds.value = status.right_leds;
                 if (status.edge_width !== undefined && document.activeElement !== els.edgeWidth) els.edgeWidth.value = status.edge_width;
                 if (status.edge_offset !== undefined && document.activeElement !== els.edgeOffset) els.edgeOffset.value = status.edge_offset;
+
+                // Monitör listesi güncelleme
+                if (status.monitors && els.ledMonitorIndex && (!els.ledMonitorIndex._loaded || els.ledMonitorIndex.options.length !== status.monitors.length)) {
+                    const currentVal = els.ledMonitorIndex.value || status.led_monitor_index || 1;
+                    els.ledMonitorIndex.innerHTML = '';
+                    status.monitors.forEach(m => {
+                        const opt = document.createElement('option');
+                        opt.value = m.index;
+                        const primaryTag = m.is_primary ? ' [Birincil Ekran]' : '';
+                        opt.textContent = `Monitör ${m.index}: ${m.name} (${m.width}x${m.height})${primaryTag}`;
+                        els.ledMonitorIndex.appendChild(opt);
+                    });
+                    els.ledMonitorIndex.value = currentVal;
+                    els.ledMonitorIndex._loaded = true;
+                } else if (status.led_monitor_index !== undefined && els.ledMonitorIndex && document.activeElement !== els.ledMonitorIndex && !isEditingMode) {
+                    els.ledMonitorIndex.value = status.led_monitor_index;
+                }
             }
 
             // Checkbox ve renk seçici gibi alanlarda isEditingMode yetersiz kalabilir, bunlara doğrudan müdahale edelim
@@ -1265,13 +1418,77 @@
             }
         }  // updateUI sonu
 
-        function updateConnectionUI(msg, connected) {
+        function updateConnectionUI(msg, connected, udpOk = false, httpOk = false) {
             clearTimeout(_connDebounceTimer);
             _lastConnStatus = null; // Zorla sıfırla
             els.statusDot.className = 'status-dot';
             els.statusText.textContent = msg;
-            els.connStatus.textContent = 'Bağlantı Yok';
-            els.connStatus.style.color = 'var(--danger-color)';
+
+            // Get current status for detailed connection info
+            const currentStatus = els.connStatus.textContent;
+            const isSendingData = els.fpsVal && parseFloat(els.fpsVal.textContent) > 0;
+
+            // UDP-only bağlantı durumunu göster
+            if (udpOk && !httpOk) {
+                els.connStatus.textContent = 'UDP ile bağlı';
+                els.connStatus.style.color = 'var(--warning-color)';
+            } else if (!udpOk && httpOk) {
+                els.connStatus.textContent = 'HTTP ile bağlı';
+                els.connStatus.style.color = 'var(--success-color)';
+            } else if (connected || isSendingData) {
+                els.connStatus.textContent = 'bağlı';
+                els.connStatus.style.color = 'var(--success-color)';
+            } else {
+                els.connStatus.textContent = 'Bağlantı Yok';
+                els.connStatus.style.color = 'var(--danger-color)';
+            }
+        }
+
+        // --- Bağlantı Testi ---
+        async function testWemosConnection() {
+            const details = document.getElementById('connection-test-details');
+            const udpEl = document.getElementById('udp-test-result');
+            const httpEl = document.getElementById('http-test-result');
+            const msgEl = document.getElementById('connection-test-message');
+
+            if (!details) return;
+            details.classList.add('show');
+
+            // Sıfırla
+            udpEl.className = 'test-value checking';
+            udpEl.textContent = 'Test ediliyor...';
+            httpEl.className = 'test-value checking';
+            httpEl.textContent = 'Test ediliyor...';
+            msgEl.textContent = 'Test ediliyor...';
+
+            try {
+                const result = await api.testWemosConnection();
+                const udpOk = result.udp_ok;
+                const httpOk = result.http_ok;
+                const msg = result.message || '';
+
+                udpEl.className = `test-value ${udpOk ? 'ok' : 'fail'}`;
+                udpEl.textContent = udpOk ? '✅ Başarılı' : '❌ Başarısız';
+
+                httpEl.className = `test-value ${httpOk ? 'ok' : 'fail'}`;
+                httpEl.textContent = httpOk ? '✅ Başarılı' : '❌ Başarısız';
+
+                msgEl.textContent = msg;
+
+                // Genel bağlantı durumunu güncelle
+                if (udpOk || httpOk) {
+                    updateConnectionUI('Bağlı', true, udpOk, httpOk);
+                } else {
+                    updateConnectionUI('Bağlantı yok', false, udpOk, httpOk);
+                }
+            } catch (e) {
+                udpEl.className = 'test-value fail';
+                udpEl.textContent = '❌ Başarısız';
+                httpEl.className = 'test-value fail';
+                httpEl.textContent = '❌ Başarısız';
+                msgEl.textContent = 'Test hatası: ' + e.message;
+                updateConnectionUI('Test hatası', false, false, false);
+            }
         }
 
         // --- Actions ---
@@ -1280,6 +1497,7 @@
             try {
                 const result = await api.scanNetwork();
                 if (result.found) {
+                    if (els.manualIpInput) els.manualIpInput.value = result.ip || '';
                     showToast(`✅ ${result.message || 'Cihaz bulundu: ' + result.ip}`, 'success');
                     // Durumu hemen güncelle (backend IP'yi zaten kaydetti)
                     setTimeout(fetchStatus, 500);
@@ -1306,8 +1524,22 @@
                     idle_color: (els.idleColor && els.idleColor.value) || '#ff0000',
                     idle_brightness: (els.idleBrightness && parseInt(els.idleBrightness.value)) || 50,
                     fullscreen_max_brightness: (els.fullscreenMaxBrightness && parseInt(els.fullscreenMaxBrightness.value)) || 255,
-                    fps: (els.targetFps && parseInt(els.targetFps.value)) || 60
+                    fps: (els.targetFps && parseInt(els.targetFps.value)) || 60,
+                    wemos_port: parseInt(els.wemosPort?.textContent) || 7777,
+                    led_monitor_index: parseInt(els.ledMonitorIndex?.value) || 1
                 };
+
+                const manualIp = els.manualIpInput && els.manualIpInput.value.trim();
+                if (manualIp) {
+                    config.wemos_ip = manualIp;
+                }
+
+                // LED sayısı sınır kontrolü (firmware limiti: 74)
+                const totalLeds = (config.top_leds || 0) + (config.bottom_leds || 0) + (config.left_leds || 0) + (config.right_leds || 0);
+                if (totalLeds > MAX_LED_COUNT) {
+                    showToast(`❌ Toplam LED sayısı (${totalLeds}) firmware limitini (${MAX_LED_COUNT}) aşıyor!`, 'error');
+                    return;
+                }
 
                 await api.saveConfig(config);
                 if (!silent) showToast('Ayarlar başarıyla kaydedildi', 'success');
@@ -1403,10 +1635,8 @@
                 
                 progressBar.style.width = '30%';
                 statusText.textContent = 'Wemos\'a gönderiliyor...';
-                
-                const result = await api.saveConfig({_ota_firmware: true}); // Trigger OTA
-                
-                // Doğrudan Wemos'a HTTP ile gönder
+
+                // Doğrudan Wemos'a HTTP ile gönder (OTA kilitli anahtar gönderme)
                 const wemosIp = document.getElementById('wemos-ip').textContent;
                 if (!wemosIp || wemosIp === '-') {
                     throw new Error('Wemos IP adresi bulunamadı');
@@ -1457,10 +1687,14 @@
         async function fetchLogs() {
             if (!_logPanelOpen) return;
             try {
-                const res = await fetch('http://127.0.0.1:8888/api/logs');
-                const data = await res.json();
+                const data = await api.getLogs();
                 if (data.logs) renderLogs(data.logs);
-            } catch (e) { /* backend henüz hazır değil */ }
+            } catch (e) {
+                const container = document.getElementById('log-entries');
+                if (container) {
+                    container.innerHTML = `<div style="color:var(--danger-color);font-size:12px;padding:8px;">❌ Loglar yüklenemedi: ${e.message}</div>`;
+                }
+            }
         }
 
         function renderLogs(logs) {

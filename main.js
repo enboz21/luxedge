@@ -65,6 +65,14 @@ function startPython() {
     return new Promise((resolve) => {
         console.log("[LuxEdge] Python backend başlatılıyor...");
 
+        // Önceki çalışan artık backend süreçlerini temizle (port çakışması önleme)
+        if (process.platform === 'win32') {
+            try {
+                const { execSync } = require('child_process');
+                execSync('taskkill /IM lush_backend.exe /F', { windowsHide: true, stdio: 'ignore' });
+            } catch (e) { /* zaten çalışmıyorsa hata yok */ }
+        }
+
         let executable, args, cwd;
 
         if (app.isPackaged) {
@@ -157,7 +165,7 @@ function startPython() {
                     else { console.warn('[LuxEdge] Python zaman aşımı'); resolve(false); }
                 });
         };
-        setTimeout(checkReady, 3000);
+        setTimeout(checkReady, 1000);
     });
 }
 
@@ -310,6 +318,16 @@ function registerIpcHandlers() {
         catch (e) { return { success: false, message: "Kayıt başarısız" }; }
     });
 
+    ipcMain.handle('get-logs', async () => {
+        try { return await pythonGet('/api/logs', 2000); }
+        catch (e) { return { logs: [] }; }
+    });
+
+    ipcMain.handle('test-wemos-connection', async () => {
+        try { return await pythonGet('/api/test-wemos-connection', 5000); }
+        catch (e) { return { success: false, message: "Test başarısız", udp_ok: false, http_ok: false }; }
+    });
+
     ipcMain.handle('restart-app', async () => {
         setTimeout(() => { app.isQuitting = true; killPython(); app.relaunch(); app.exit(); }, 1000);
         return { success: true, message: "Yeniden başlatılıyor..." };
@@ -423,4 +441,4 @@ app.on('before-quit', () => { app.isQuitting = true; });
 app.on('will-quit', () => { killPython(); if (tray) { tray.destroy(); tray = null; } });
 
 process.on('exit', killPython);
-process.on('uncaughtException', (err) => { console.error('[LuxEdge] Hata:', err); killPython(); });
+process.on('uncaughtException', (err) => { console.error('[LuxEdge] Hata:', err); killPython(); app.exit(1); });

@@ -1,5 +1,5 @@
 {
-    "wemos_ip": "33.33.33.8",
+    "wemos_ip": "33.33.33.21",
     "wemos_port": 7777,
     "fps": 60,
     "top_leds": 34,
@@ -12,5 +12,7 @@
     "idle_mode": true,
     "idle_color": "#ff0000",
     "idle_brightness": 15,
-    "idle_use_windows_color": false
+    "idle_use_windows_color": false,
+    "fullscreen_max_brightness": 255,
+    "led_monitor_index": 1
 }

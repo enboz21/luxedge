@@ -183,8 +183,9 @@ def load_config():
     return None
 
 def save_config(config):
-    """Konfigürasyon dosyasını kaydeder (yedek alarak)"""
+    """Konfigürasyon dosyasını atomik olarak kaydeder (yedek alarak)"""
     config_path = get_config_path()
+    tmp_path = config_path + '.tmp'
     try:
         # Mevcut config'i yedekle
         if os.path.exists(config_path):
@@ -193,12 +194,23 @@ def save_config(config):
                 shutil.copy2(config_path, backup_path)
             except Exception:
                 pass
-        
-        with open(config_path, 'w', encoding='utf-8') as f:
+
+        with open(tmp_path, 'w', encoding='utf-8') as f:
             json.dump(config, f, indent=4, ensure_ascii=False)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except Exception:
+                pass
+        # Atomik replace (Windows/POSIX uyumlu)
+        os.replace(tmp_path, config_path)
         return True
     except Exception as e:
         print(f"[HATA] Konfigürasyon dosyası kaydedilemedi: {e}")
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
         return False
 
 # ============================================================
@@ -610,8 +622,10 @@ def scan_available_wifi_networks():
             return []
 
 def find_wemos_hotspot():
-    """Wemos hotspot'unu otomatik bulur"""
+    """Wemos hotspot'unu otomatik bulur (locale uyumlu)"""
     wemos_keywords = ['wemos', 'ambilight', 'setup', 'config', 'esp']
+    # Her Windows diline göre en olası SSID etiketleri
+    ssid_labels = ['ssid', 'ID', 'AG', 'WLAN', 'Ad', 'Nomi', 'ชื่อ', '네트워크', 'Réseau']
     if sys.platform == 'win32':
         try:
             result = subprocess.run(
@@ -626,10 +640,12 @@ def find_wemos_hotspot():
             for line in result.stdout.split('\n'):
                 line_lower = line.strip().lower()
                 for keyword in wemos_keywords:
-                    if keyword in line_lower and 'ssid' in line_lower:
-                        ssid_match = re.search(r'SSID\s*\d+\s*:\s*(.+)', line, re.IGNORECASE)
-                        if ssid_match:
-                            return ssid_match.group(1).strip()
+                    # Her SSID etiketine göre etiket arama
+                    for ssid_label in ssid_labels:
+                        if keyword in line_lower and ssid_label in line_lower:
+                            ssid_match = re.search(rf'{re.escape(ssid_label)}\s*\d*\s*:\s*(.+)', line, re.IGNORECASE)
+                            if ssid_match:
+                                return ssid_match.group(1).strip()
             return None
         except Exception:
             return None
@@ -656,7 +672,7 @@ def connect_to_wifi(ssid, password=None):
         try:
             if password:
                 result = subprocess.run(
-                    ['netsh', 'wlan', 'connect', f'name={ssid}', f'key={password}'],
+                    ['netsh', 'wlan', 'connect', f'name={ssid}'],
                     capture_output=True, text=True, timeout=30,
                     creationflags=CREATE_NO_WINDOW, errors='ignore', stdin=subprocess.DEVNULL
                 )
@@ -892,43 +908,52 @@ def hex_to_rgb(hex_color):
         return (255, 0, 0)
 
 def get_system_accent_color():
-    """Sistem vurgu rengini döndürür (Windows/Linux)"""
-    if sys.platform == 'win32':
-        try:
-            registry = winreg.ConnectRegistry(None, winreg.HKEY_CURRENT_USER)
-            key = winreg.OpenKey(registry, r"Software\Microsoft\Windows\DWM")
-            value, _ = winreg.QueryValueEx(key, "ColorizationColor")
-            winreg.CloseKey(key)
-            
-            # ColorizationColor genelde ARGB (AARRGGBB) formatındadır, bize RGB lazım
-            color_hex = f"{value:08x}"
-            if len(color_hex) == 8:
-                r = int(color_hex[2:4], 16)
-                g = int(color_hex[4:6], 16)
-                b = int(color_hex[6:8], 16)
-                return f"#{r:02x}{g:02x}{b:02x}"
-        except Exception:
-            pass
-    else:
-        # Linux: GNOME/KDE accent color okumayı dene
-        try:
-            result = subprocess.run(
-                ['gsettings', 'get', 'org.gnome.desktop.interface', 'accent-color'],
-                capture_output=True, text=True, timeout=5,
-                errors='ignore', stdin=subprocess.DEVNULL
-            )
-            color_name = result.stdout.strip().strip("'")
-            # GNOME accent color isimleri
-            gnome_colors = {
-                'blue': '#3584e4', 'teal': '#2190a4', 'green': '#3a944a',
-                'yellow': '#c88800', 'orange': '#ed5b00', 'red': '#e62d42',
-                'pink': '#d56199', 'purple': '#9141ac', 'slate': '#6f8396'
-            }
-            if color_name in gnome_colors:
-                return gnome_colors[color_name]
-        except Exception:
-            pass
-    return "#ff0000"  # fallback kırmızı
+    """Sistem vurgu rengini döndürür (Windows/Linux), güvenli fallback ile"""
+    try:
+        if sys.platform == 'win32':
+            try:
+                registry = winreg.ConnectRegistry(None, winreg.HKEY_CURRENT_USER)
+                key = winreg.OpenKey(registry, r"Software\Microsoft\Windows\DWM")
+                value, _ = winreg.QueryValueEx(key, "ColorizationColor")
+                winreg.CloseKey(key)
+
+                # ColorizationColor genelde ARGB (AARRGGBB) formatındadır, bize RGB lazım
+                color_hex = f"{value:08x}"
+                if len(color_hex) == 8:
+                    r = int(color_hex[2:4], 16)
+                    g = int(color_hex[4:6], 16)
+                    b = int(color_hex[6:8], 16)
+                    return f"#{r:02x}{g:02x}{b:02x}"
+            except Exception:
+                log.warning(f"[ACCENT] Windows DWM registry'dan vurgu rengi okunamadı")
+                pass
+        else:
+            # Linux: GNOME/KDE accent color okumayı dene
+            try:
+                result = subprocess.run(
+                    ['gsettings', 'get', 'org.gnome.desktop.interface', 'accent-color'],
+                    capture_output=True, text=True, timeout=5,
+                    errors='ignore', stdin=subprocess.DEVNULL
+                )
+                color_name = result.stdout.strip().strip("'")
+                # GNOME accent color isimleri
+                gnome_colors = {
+                    'blue': '#3584e4', 'teal': '#2190a4', 'green': '#3a944a',
+                    'yellow': '#c88800', 'orange': '#ed5b00', 'red': '#e62d42',
+                    'pink': '#d56199', 'purple': '#9141ac', 'slate': '#6f8396'
+                }
+                if color_name in gnome_colors:
+                    return gnome_colors[color_name]
+            except Exception:
+                log.warning(f"[ACCENT] Linux gsettings'ten vurgu rengi okunamadı")
+                pass
+
+        # Tüm yöntemler başarısız oldu: güvenli bir fallback kullan
+        log.warning(f"[ACCENT] Tüm sistem vurgu rengi yöntemleri başarısız, varsayılan mavi (#3584e4) kullanılıyor")
+        return "#3584e4"
+    except Exception as e:
+        log.error(f"[ACCENT] get_system_accent_color hatası: {e}")
+        return "#3584e4"  # kritik durumda güvenli fallback
 
 # Eski isimle uyumluluk
 get_windows_accent_color = get_system_accent_color
@@ -940,6 +965,78 @@ _FULLSCREEN_CACHE_TTL = 0.5  # 500ms'de bir kontrol et (2. ekrana tıklama anın
 # Linux X11 display (tek sefer aç, tekrar kullan)
 _x11_display = None
 _x11_lib = None
+
+# --- LED Monitörü Seçimi ---
+# --- LED Monitörü Seçimi ---
+# mss kütüphanesinde:
+#   sct.monitors[0]: TÜM monitörlerin birleşimidir (Virtual Desktop). LED için KULLANILMAZ!
+#   sct.monitors[1]: 1. fiziksel monitör (genellikle birincil)
+#   sct.monitors[2]: 2. fiziksel monitör vb.
+def get_primary_monitor_index(sct_inst=None):
+    """sct.monitors içindeki birincil fiziksel monitörün indeksini döndürür"""
+    try:
+        if sct_inst is None or not hasattr(sct_inst, 'monitors'):
+            with mss() as s:
+                return get_primary_monitor_index(s)
+        if len(sct_inst.monitors) <= 1:
+            return 0
+        for idx in range(1, len(sct_inst.monitors)):
+            m = sct_inst.monitors[idx]
+            if m.get('is_primary') or (m.get('left') == 0 and m.get('top') == 0):
+                return idx
+        return 1
+    except Exception:
+        return 1
+
+def get_led_monitor_index(sct_inst=None):
+    """Kullanılacak LED monitörünün indeksini döndürür (asla virtual 0 dönmez)"""
+    # 1) Ortam değişkeninden oku (öncelikli)
+    env_idx = os.environ.get("LED_MONITOR_INDEX")
+    if env_idx is not None:
+        try:
+            idx = int(env_idx)
+            if idx > 0:
+                return idx
+        except ValueError:
+            pass
+
+    # 2) Config dosyasından oku
+    try:
+        config = load_config()
+        if config and "led_monitor_index" in config:
+            idx = int(config["led_monitor_index"])
+            if idx > 0:
+                return idx
+    except Exception:
+        pass
+
+    # 3) Varsayılan: birincil fiziksel monitör (asla 0 / sanal ekran dönmez)
+    return get_primary_monitor_index(sct_inst)
+
+def get_available_monitors(sct_inst=None):
+    """Sistemdeki fiziksel monitörleri listeler (Web UI için)"""
+    monitors_list = []
+    try:
+        def _extract(s):
+            for idx in range(1, len(s.monitors)):
+                m = s.monitors[idx]
+                monitors_list.append({
+                    "index": idx,
+                    "name": m.get("name", f"Monitör {idx}"),
+                    "width": m.get("width", 0),
+                    "height": m.get("height", 0),
+                    "left": m.get("left", 0),
+                    "top": m.get("top", 0),
+                    "is_primary": bool(m.get("is_primary") or (m.get("left") == 0 and m.get("top") == 0))
+                })
+        if sct_inst:
+            _extract(sct_inst)
+        else:
+            with mss() as s:
+                _extract(s)
+    except Exception:
+        pass
+    return monitors_list
 
 def _get_x11_display():
     """X11 display bağlantısını aç ve cache'le"""
@@ -1010,11 +1107,14 @@ def _get_window_root_position(window_id_hex):
         return None, None
 
 def _is_window_on_led_monitor(window_id_hex):
-    """Pencerenin LED monitöründe (mss monitors[1] = primary) olup olmadığını kontrol eder"""
+    """Pencerenin LED monitöründe olup olmadığını kontrol eder"""
     try:
         from mss import mss
         with mss() as sct:
-            led_monitor = sct.monitors[1]  # Primary monitor = LED monitörü
+            led_idx = get_led_monitor_index(sct)
+            if led_idx >= len(sct.monitors) or led_idx <= 0:
+                led_idx = get_primary_monitor_index(sct)
+            led_monitor = sct.monitors[led_idx]
         
         root_x, root_y = _get_window_root_position(window_id_hex)
         if root_x is None:
@@ -1029,7 +1129,7 @@ def _is_window_on_led_monitor(window_id_hex):
         return True  # Hata durumunda varsayılan: True
 
 def _is_window_fullscreen_on_primary_win32(hwnd):
-    """Windows: Verilen pencerenin birincil monitörde tam ekran olup olmadığını kontrol eder"""
+    """Windows: Verilen pencerenin seçili LED monitöründe tam ekran olup olmadığını kontrol eder"""
     try:
         import ctypes
         from ctypes import wintypes
@@ -1058,13 +1158,21 @@ def _is_window_fullscreen_on_primary_win32(hwnd):
         rect = wintypes.RECT()
         user32.GetWindowRect(hwnd, ctypes.byref(rect))
         
-        screen_w = user32.GetSystemMetrics(0)
-        screen_h = user32.GetSystemMetrics(1)
-        
         w = rect.right - rect.left
         h = rect.bottom - rect.top
         
-        # Birincil monitörde tam ekran kontrolü
+        # Seçili LED monitörünün koordinatlarına göre kontrol et
+        try:
+            with mss() as s:
+                led_idx = get_led_monitor_index(s)
+                if 0 < led_idx < len(s.monitors):
+                    m = s.monitors[led_idx]
+                    return (w == m['width'] and h == m['height'] and rect.left == m['left'] and rect.top == m['top'])
+        except Exception:
+            pass
+
+        screen_w = user32.GetSystemMetrics(0)
+        screen_h = user32.GetSystemMetrics(1)
         return (w == screen_w and h == screen_h and rect.top == 0 and rect.left == 0)
     except Exception:
         return False
@@ -1167,7 +1275,12 @@ def grab_edge_colors(top_leds, bottom_leds, left_leds, right_leds, edge_width, e
     v1.6.1: Tamamen numpy vektörizasyonu ile yeniden yazıldı.
     PIL.Image.crop() döngüsü kaldırıldı → ~3-4x daha hızlı.
     """
-    monitor = sct.monitors[1]
+    if sct is None or not hasattr(sct, 'monitors'):
+        sct = mss()
+    led_idx = get_led_monitor_index(sct)
+    if not hasattr(sct, 'monitors') or led_idx >= len(sct.monitors) or led_idx <= 0:
+        led_idx = get_primary_monitor_index(sct)
+    monitor = sct.monitors[led_idx]
     screenshot = sct.grab(monitor)
     # mss'den direkt numpy array (BGRA) → RGB'ye çevir (kopyasız dönüşüm)
     arr = np.frombuffer(screenshot.raw, dtype=np.uint8).reshape(screenshot.height, screenshot.width, 4)[:, :, 2::-1]
@@ -1278,9 +1391,21 @@ def get_status():
 # WEB ARAYÜZÜ SUNUCUSU
 # ============================================================
 
+# Sadece bu anahtarlar /api/config üzerinden kaydedilebilir
+# (OTA kilitli ayarlar, OTA update öncesi veri kaybı önleme)
+ALLOWED_CONFIG_KEYS = {
+    "wemos_ip", "wemos_port", "fps",
+    "top_leds", "bottom_leds", "left_leds", "right_leds",
+    "edge_width", "led_offset", "edge_offset",
+    "idle_mode", "idle_color", "idle_brightness",
+    "idle_use_windows_color",
+    "fullscreen_max_brightness",
+    "led_monitor_index",
+}
+
 class WebUIHandler(http.server.BaseHTTPRequestHandler):
     """Web arayüzü için HTTP istek işleyicisi"""
-    
+
     def log_message(self, format, *args):
         """HTTP loglarını sustur (konsolu temiz tut)"""
         pass
@@ -1290,7 +1415,7 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
         try:
             self.send_response(200)
             self.send_header('Content-Type', 'application/json; charset=utf-8')
-            self.send_header('Access-Control-Allow-Origin', 'http://127.0.0.1')
+            self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
             self.wfile.write(json.dumps(data, ensure_ascii=False).encode('utf-8'))
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
@@ -1306,6 +1431,8 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
                 self.serve_scan()
             elif self.path == '/api/logs':
                 self.serve_logs()
+            elif self.path == '/api/test-wemos-connection':
+                self.handle_test_wemos_connection()
             else:
                 self.send_error(404)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
@@ -1338,11 +1465,12 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
                 content = f.read()
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
-            self.send_header('Access-Control-Allow-Origin', 'http://127.0.0.1')
+            self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
             self.wfile.write(content.encode('utf-8'))
         except FileNotFoundError:
             self.send_response(404)
+            self.send_header('Access-Control-Allow-Origin', '*')
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.end_headers()
             self.wfile.write(b"<h1>Web UI dosyasi bulunamadi!</h1>")
@@ -1351,6 +1479,10 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
         """Durum bilgisini JSON olarak sun"""
         status = get_status()
         
+        # Monitör listesini ve seçili monitörü ekle
+        status['monitors'] = get_available_monitors()
+        status['led_monitor_index'] = get_led_monitor_index()
+
         # Uptime hesapla
         if status['uptime_start'] > 0:
             uptime_seconds = int(time.time() - status['uptime_start'])
@@ -1398,37 +1530,72 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
             result["message"] = f"Tarama hatası: {str(e)}"
         
         self._safe_send_json(result)
-    
+
     def handle_config_update(self):
         """Konfigürasyon güncelleme"""
         content_length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(content_length)
-        
+
         try:
             new_config = json.loads(body.decode('utf-8'))
+            # Sadece whitelisted anahtarları kabul et (OTA kilitli anahtarları filtrele)
+            filtered_config = {}
+            for k, v in new_config.items():
+                if k in ALLOWED_CONFIG_KEYS:
+                    # Boş veya sadece boşluklardan oluşan wemos_ip gelirse mevcut IP'yi koru
+                    if k == "wemos_ip" and (v is None or not str(v).strip()):
+                        continue
+                    filtered_config[k] = v
+                else:
+                    log.warning(f"[CONFIG] Engellenen anahtar atlandı: {k}")
+            if filtered_config != new_config:
+                log.info(f"[CONFIG] Filtrelenen anahtarlar: {set(new_config.keys()) - ALLOWED_CONFIG_KEYS}")
+
             current_config = load_config() or {}
-            current_config.update(new_config)
-            
+            current_config.update(filtered_config)
+
             if save_config(current_config):
                 # Anında global bellek durumunu güncelle (UI senkronizasyon bug'ını çözer)
-                for k, v in new_config.items():
+                for k, v in filtered_config.items():
                     update_status(k, v)
-                
+
                 # Toplam led sayısını hemen hesaplayıp senkronize et ki arayüzde değer geri zıplamasın
                 c_top = current_config.get("top_leds", 0)
                 c_bot = current_config.get("bottom_leds", 0)
                 c_lft = current_config.get("left_leds", 0)
                 c_rgt = current_config.get("right_leds", 0)
                 update_status("total_leds", c_top + c_bot + c_lft + c_rgt)
-                
+
                 result = {"success": True, "message": "Konfigürasyon kaydedildi."}
             else:
                 result = {"success": False, "message": "Konfigürasyon kaydedilemedi."}
         except Exception as e:
             result = {"success": False, "message": f"Hata: {str(e)}"}
-        
+
         self._safe_send_json(result)
-    
+
+    def handle_test_wemos_connection(self):
+        """Wemos bağlantı durumunu test eder (UDP + HTTP)"""
+        try:
+            wemos_ip = get_status().get('wemos_ip')
+            wemos_port = get_status().get('wemos_port', 7777)
+
+            if not wemos_ip:
+                result = {"success": False, "message": "Wemos IP adresi ayarlanmamış", "udp_ok": False, "http_ok": False}
+            else:
+                udp_ok, http_ok, message = test_wemos_connection(wemos_ip, wemos_port)
+                result = {
+                    "success": udp_ok or http_ok,
+                    "message": message,
+                    "udp_ok": udp_ok,
+                    "http_ok": http_ok
+                }
+
+        except Exception as e:
+            result = {"success": False, "message": f"Test hatası: {str(e)}", "udp_ok": False, "http_ok": False}
+
+        self._safe_send_json(result)
+
     def handle_restart(self):
         """Uygulamayı yeniden başlat"""
         result = {"success": True, "message": "Uygulama yeniden başlatılıyor..."}
@@ -1456,12 +1623,12 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
             wemos_ip = get_status().get('wemos_ip')
             url = f"http://{wemos_ip}/toggle_sleep"
             with urllib.request.urlopen(url, timeout=2) as response:
-                resp_text = response.read().decode('utf-8').strip()
+                resp_text = response.read().decode('utf-8').strip().upper()
                 state = "AÇIK" if resp_text == "SLEEP_ON" else "KAPALI"
                 result = {"success": True, "message": f"Wemos uyku modu: {state}", "state": resp_text}
         except Exception as e:
             result = {"success": False, "message": f"Wemos hatası: {str(e)}"}
-            
+
         self._safe_send_json(result)
 
     def handle_wemos_reset_wifi(self):
@@ -1469,17 +1636,11 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
         try:
             wemos_ip = get_status().get('wemos_ip')
             url = f"http://{wemos_ip}/reset_wifi"
-            
-            # Wemos sıfırlandığı için yanıt gelemeyebilir
-            try:
-                urllib.request.urlopen(url, timeout=1)
-            except Exception:
-                pass
-                
+            urllib.request.urlopen(url, timeout=2)
             result = {"success": True, "message": "Wemos sıfırlanıyor, hotspot moduna dönülecek..."}
         except Exception as e:
             result = {"success": False, "message": f"Wemos iletişim hatası: {str(e)}"}
-            
+
         self._safe_send_json(result)
 
     def handle_wemos_ota(self):
@@ -1680,22 +1841,62 @@ def ping_wemos(ip, port=7777, timeout=3):
             pass
         return False
 
+def check_wemos_http(ip, timeout=2):
+    """
+    Wemos'un /status HTTP endpoint'ine GET isteği göndererek
+    erişilebilirliğini kontrol eder. UDP engellendiğinde veya Wemos
+    HTTP server'ı çalışıyorsa (port 80) yardımcı olur.
+    """
+    try:
+        import urllib.request
+        import json
+        url = f"http://{ip}/status"
+        req = urllib.request.Request(url, method='GET')
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            if response.status == 200:
+                data = json.loads(response.read().decode('utf-8'))
+                # Wemos /status endpoint'inden temel alan doğrulama
+                if isinstance(data, dict) and 'ip' in data:
+                    return True
+    except Exception:
+        pass
+    return False
+
+def test_wemos_connection(ip, port=7777):
+    """
+    Wemos'a bağlantı durumu test eder:
+    - UDP PING/PONG kontrolü (port 7777)
+    - HTTP /status endpoint kontrolü (port 80)
+    Returns tuple (udp_ok, http_ok, message)
+    """
+    udp_ok = ping_wemos(ip, port=port, timeout=3)
+    http_ok = check_wemos_http(ip, timeout=2)
+
+    if udp_ok and http_ok:
+        return True, True, f"✅ Her iki protokol da çalışıyor ({ip}:{port}, http://{ip}/status)"
+    elif udp_ok:
+        return True, False, f"✅ UDP PING/PONG çalışıyor ({ip}:{port}), HTTP endpoint erişilemiyor"
+    elif http_ok:
+        return False, True, f"✅ HTTP endpoint çalışıyor ({ip}/status), UDP PING/PONG erişilemiyor"
+    else:
+        return False, False, f"❌ Wemos'a bağlanılamıyor ({ip}:{port})"
+
 def wemos_connectivity_checker(ip, port, cancel_event=None):
     """
     Arka planda Wemos'un erişilebilir olup olmadığını kontrol eder.
-    v1.6.1: MAX_FAILS=3, debounce ile bağlantı titremesi azaltıldı.
+    v1.6.3: Bağlantı durumu artık PING'e değil, gerçek veri akışına (actual_fps > 0) dayanır.
+    PING/HTTP sadece yardımcı onaydır; veri akışı varsa "bağlı" sayılır.
     """
     global running
     consecutive_fails = 0
     consecutive_successes = 0
-    MAX_FAILS = 3        # 3 ardışık başarısızlık = bağlı değil (önceki: 2)
-    MIN_SUCCESS = 2      # Yeniden "bağlı" demek için 2 ardışık başarı gerekir
+    MAX_FAILS = 5        # PING/HTTP başarısızlığı toleransı artırıldı
+    MIN_SUCCESS = 1      # Tek başarıyla "bağlı" sayılır (veri akışı varsa)
     was_connected = False
-    # Durum geçişinde debounce: son 2 saniyede durum değişmediyse UI'yı güncelle
     last_status_change = 0.0
-    DEBOUNCE_SEC = 2.0
+    DEBOUNCE_SEC = 3.0   # Daha yumuşak geçiş
 
-    log.info(f"[BAĞLANTI] Connectivity checker başlatıldı (Hedef: {ip})")
+    log.info(f"[BAĞLANTI] Connectivity checker başlatıldı (Hedef: {ip}:{port})")
 
     # İlk birkaç saniye bekle, worker başlasın
     for _ in range(30):
@@ -1703,21 +1904,37 @@ def wemos_connectivity_checker(ip, port, cancel_event=None):
             return
         time.sleep(0.1)
 
-    log.info(f"[BAĞLANTI] İlk kontrol yapılıyor...")
+    log.info(f"[BAĞLANTI] İlk kontrol yapılıyor... (Port {port})")
 
     while running and (cancel_event is None or not cancel_event.is_set()):
         try:
-            # UDP PING/PONG ile kontrol (port 7777 - Wemos firmware destekliyor)
-            wemos_reachable = ping_wemos(ip, port=7777, timeout=3)
+            # 1) Gerçek veri akışı var mı? (en güvenilir göstergeler)
+            status = get_status()
+            actual_fps = status.get('actual_fps', 0)
+            errors = status.get('errors', 0)
+            packets_sent = status.get('packets_sent', 0)
+
+            data_flowing = (actual_fps and actual_fps > 1.0) and (errors < 50)
+
+            # 2) Bağlantı kararı: veri akışı VARSA doğrudan bağlı sayılır (Wemos'u PING/HTTP ile yorma)
+            # Veri akışı YOKSA PING veya HTTP ile kontrol et
+            if data_flowing:
+                udp_ok = True
+                http_ok = False
+                wemos_reachable = True
+            else:
+                udp_ok = ping_wemos(ip, port=port, timeout=2)
+                http_ok = check_wemos_http(ip, timeout=2) if not udp_ok else False
+                wemos_reachable = udp_ok or http_ok
 
             if wemos_reachable:
                 consecutive_fails = 0
                 consecutive_successes += 1
-                # Debounce: bağlı değilken bağlıya geçiş için MIN_SUCCESS başarı gerekir
                 if not was_connected and consecutive_successes >= MIN_SUCCESS:
                     now = time.time()
                     if now - last_status_change >= DEBOUNCE_SEC:
-                        log.info(f"[BAĞLANTI] ✅ Wemos'a bağlantı kuruldu ({ip})")
+                        reason = "veri akışı" if data_flowing else ("UDP PING" if udp_ok else "HTTP")
+                        log.info(f"[BAĞLANTI] ✅ Wemos'a bağlantı kuruldu ({ip}:{port}) - sebep: {reason}")
                         was_connected = True
                         last_status_change = now
                         update_status("connection", "bağlı")
@@ -1731,7 +1948,7 @@ def wemos_connectivity_checker(ip, port, cancel_event=None):
                 if consecutive_fails >= MAX_FAILS:
                     now = time.time()
                     if was_connected and now - last_status_change >= DEBOUNCE_SEC:
-                        log.warning(f"[BAĞLANTI] ❌ Wemos bağlantısı kesildi ({ip})")
+                        log.warning(f"[BAĞLANTI] ❌ Wemos bağlantısı kesildi ({ip}:{port})")
                         was_connected = False
                         last_status_change = now
                         update_status("connection", "bağlı değil")
@@ -1740,7 +1957,7 @@ def wemos_connectivity_checker(ip, port, cancel_event=None):
         except Exception as e:
             consecutive_successes = 0
             consecutive_fails += 1
-            log.error(f"[BAĞLANTI] Kontrol hatası: {e}")
+            log.error(f"[BAĞLANTI] Kontrol hatası ({ip}:{port}): {e}")
             if consecutive_fails >= MAX_FAILS:
                 was_connected = False
                 update_status("connection", "bağlı değil")
@@ -1808,7 +2025,11 @@ def ambilight_worker(config):
     update_status("packets_sent", 0)
     update_status("actual_fps", 0)
     log.info(f"[WORKER] Ambilight worker başlatıldı (Hedef FPS: {FPS}, LED: {TOTAL_LEDS})")
-    
+    if WEMOS_IP:
+        log.info(f"[WORKER] Wemos hedefi: {WEMOS_IP}:{WEMOS_PORT}")
+    else:
+        log.info("[WORKER] Wemos hedefi ayarlanmamış; IP bekleniyor...")
+
     # Wemos bağlantı kontrol thread'ini başlat (Eğer IP varsa)
     connectivity_thread = None
     connectivity_cancel = None
@@ -1827,8 +2048,14 @@ def ambilight_worker(config):
     
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sct = mss() # DÜZELTİLDİ
-        
+        sct = mss()
+        led_idx = get_led_monitor_index(sct)
+        if not hasattr(sct, 'monitors') or led_idx >= len(sct.monitors) or led_idx <= 0:
+            led_idx = get_primary_monitor_index(sct)
+        update_status("led_monitor_index", led_idx)
+        mon_name = sct.monitors[led_idx].get('name', f'Monitör {led_idx}') if (hasattr(sct, 'monitors') and led_idx < len(sct.monitors)) else 'Bilinmeyen'
+        log.info(f"[MONITOR] Ambilight için kullanılacak monitör: {led_idx} ({mon_name})")
+
         while running:
             # Periyodik config kontrolü (IP değişikliğini canlı algıla)
             current_time_check = time.time()
@@ -1895,6 +2122,12 @@ def ambilight_worker(config):
                         update_status("fps", FPS)
                         print("✓ (Worker) LED / Kenar / Bekleme Modu Konfigürasyonları Canlı Olarak Güncellendi.")
                     
+                    new_mon_idx = new_config.get("led_monitor_index")
+                    if new_mon_idx is not None and int(new_mon_idx) != led_idx:
+                        led_idx = int(new_mon_idx)
+                        update_status("led_monitor_index", led_idx)
+                        log.info(f"[CONFIG] Hedef LED monitörü güncellendi: {led_idx}")
+
                     new_ip = new_config.get("wemos_ip", "")
                     if new_ip and new_ip != WEMOS_IP:
                         print(f"✓ (Worker) IP değişti: '{WEMOS_IP}' → '{new_ip}'")
@@ -2000,7 +2233,7 @@ def main():
     global running, ambilight_thread, icon
     
     print("\n" + "="*60)
-    print("  AMBILIGHT PC v1.6.2 - Linux & Windows")
+    print("  AMBILIGHT PC v1.6.3 - Linux & Windows")
     print("="*60)
     
     # Konfigürasyonu yükle
