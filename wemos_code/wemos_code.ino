@@ -9,8 +9,10 @@
 
 #define LED_PIN   D2       // D2 pini (GPIO4) - Wemos D1 Mini
 #define LED_COUNT 74       // 34 + 0 + 20 + 20 (config ile eşleşmeli)
+#define FIRMWARE_VERSION "1.6.4"
 #define UDP_PORT  7777
 #define DNS_PORT  53       // --- EKLENDİ: DNS Portu ---
+#define STATUS_BRIGHTNESS 64 // Sistem animasyonları: yaklaşık %25 güç
 
 // Hotspot ayarları
 const char* ap_ssid = "Wemos_Setup";
@@ -28,6 +30,7 @@ ESP8266HTTPUpdateServer httpUpdater; // OTA HTTP güncelleyici nesnesi
 
 bool isHotspotMode = false;
 bool udpRunning = false;
+bool networkServicesNeedRestart = false;
 
 // WiFi reconnect yönetimi (global, connectToWiFi() içinden sıfırlanır)
 int reconnectCount = 0;
@@ -39,6 +42,17 @@ unsigned long lastAnimUpdate = 0;    // Son animasyon güncellemesi
 int idleAnimPos = 0;                 // Halka pozisyonu
 bool receivingData = false;          // PC'den veri geliyor mu?
 bool isSleepMode = false;            // Uyku modu (LED'ler kapalı)
+bool hasReceivedLedData = false;      // Bu açılışta en az bir geçerli LED paketi alındı mı?
+unsigned long lastUdpActivityTime = 0;// Son geçerli UDP paketi zamanı (PING/discovery/LED)
+unsigned long lastHttpActivityTime = 0;// Son HTTP /status isteği zamanı
+unsigned int udpRebindCount = 0;      // Tanılama: UDP soketi kaç kez yenilendi
+unsigned int wifiRecoveryCount = 0;   // Tanılama: Wi-Fi kaç kez kurtarılmaya çalışıldı
+String bootResetReason = "unknown";  // ESP'nin bildirdiği son reset sebebi
+uint8_t dataRecoveryStage = 0;        // 0=normal, 1=UDP yenilendi, 2=Wi-Fi yenilendi
+
+const unsigned long UDP_RECOVERY_DELAY_MS = 5000UL;
+const unsigned long WIFI_RECOVERY_DELAY_MS = 20000UL;
+const unsigned long RESTART_RECOVERY_DELAY_MS = 60000UL;
 
 // EEPROM adresleri
 #define EEPROM_SIZE 128
@@ -53,6 +67,38 @@ void handleRestart();
 void handleToggleSleep();
 void handleResetWifi();
 void connectToWiFi();
+bool restartUdpListener(const char* reason);
+
+uint32_t statusColor(uint8_t r, uint8_t g, uint8_t b) {
+  uint8_t scaledR = (uint16_t)r * STATUS_BRIGHTNESS / 255;
+  uint8_t scaledG = (uint16_t)g * STATUS_BRIGHTNESS / 255;
+  uint8_t scaledB = (uint16_t)b * STATUS_BRIGHTNESS / 255;
+  return strip.Color(scaledR, scaledG, scaledB);
+}
+
+bool restartUdpListener(const char* reason) {
+  Udp.stop();
+  udpRunning = false;
+  delay(10);
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.print("UDP yenilenemedi, Wi-Fi bagli degil. Sebep: ");
+    Serial.println(reason);
+    return false;
+  }
+
+  if (Udp.begin(UDP_PORT)) {
+    udpRunning = true;
+    udpRebindCount++;
+    Serial.print("UDP soketi yenilendi. Sebep: ");
+    Serial.println(reason);
+    return true;
+  }
+
+  Serial.print("UDP soketi yenilenemedi. Sebep: ");
+  Serial.println(reason);
+  return false;
+}
 
 // XSS koruması için HTML escape fonksiyonu
 String htmlEscape(String input) {
@@ -145,12 +191,13 @@ void startHotspot() {
   server.begin();
   Udp.begin(UDP_PORT);
   udpRunning = true;
+  networkServicesNeedRestart = false;
   
   isHotspotMode = true;
   
   // LED'i mavi yap (hotspot modu)
   for (int i = 0; i < LED_COUNT; i++) {
-    strip.setPixelColor(i, strip.Color(0, 0, 255));
+    strip.setPixelColor(i, statusColor(0, 0, 255));
   }
   strip.show();
 }
@@ -235,14 +282,46 @@ void handleWiFiConfig() {
 }
 
 void handleStatus() {
-  String status = "{\"mode\":\"";
+  lastHttpActivityTime = millis();
+  long lastDataAgeMs = hasReceivedLedData ? (long)(millis() - lastDataTime) : -1;
+  long lastUdpAgeMs = lastUdpActivityTime > 0 ? (long)(millis() - lastUdpActivityTime) : -1;
+
+  String status;
+  status.reserve(512);
+  status = "{\"mode\":\"";
   status += isHotspotMode ? "hotspot" : "wifi";
   status += "\",\"ip\":\"";
   status += isHotspotMode ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
   status += "\",\"led_count\":";
   status += String(LED_COUNT);
+  status += ",\"firmware_version\":\"";
+  status += FIRMWARE_VERSION;
+  status += "\"";
   status += ",\"sleep_mode\":";
   status += isSleepMode ? "true" : "false";
+  status += ",\"wifi_connected\":";
+  status += WiFi.status() == WL_CONNECTED ? "true" : "false";
+  status += ",\"rssi\":";
+  status += WiFi.status() == WL_CONNECTED ? String(WiFi.RSSI()) : "0";
+  status += ",\"udp_running\":";
+  status += udpRunning ? "true" : "false";
+  status += ",\"receiving_data\":";
+  status += receivingData ? "true" : "false";
+  status += ",\"has_received_led_data\":";
+  status += hasReceivedLedData ? "true" : "false";
+  status += ",\"last_data_age_ms\":";
+  status += String(lastDataAgeMs);
+  status += ",\"last_udp_age_ms\":";
+  status += String(lastUdpAgeMs);
+  status += ",\"uptime_seconds\":";
+  status += String(millis() / 1000UL);
+  status += ",\"udp_rebind_count\":";
+  status += String(udpRebindCount);
+  status += ",\"wifi_recovery_count\":";
+  status += String(wifiRecoveryCount);
+  status += ",\"reset_reason\":\"";
+  status += bootResetReason;
+  status += "\"";
   status += "}";
   server.send(200, "application/json", status);
 }
@@ -305,7 +384,7 @@ void connectToWiFi() {
   
   // LED'i sarı yap (bağlanıyor) - döngüden önce 1 kere ayarla
   for (int i = 0; i < LED_COUNT; i++) {
-    strip.setPixelColor(i, strip.Color(255, 255, 0));
+    strip.setPixelColor(i, statusColor(255, 255, 0));
   }
   strip.show();
 
@@ -330,7 +409,7 @@ void connectToWiFi() {
     
     // LED'i yeşil yap (bağlandı)
     for (int i = 0; i < LED_COUNT; i++) {
-      strip.setPixelColor(i, strip.Color(0, 255, 0));
+      strip.setPixelColor(i, statusColor(0, 255, 0));
     }
     strip.show();
     delay(1000);
@@ -358,7 +437,7 @@ void connectToWiFi() {
     ArduinoOTA.onStart([]() {
       // OTA başladığında mor renk
       for (int i = 0; i < LED_COUNT; i++) {
-        strip.setPixelColor(i, strip.Color(128, 0, 255));
+        strip.setPixelColor(i, statusColor(128, 0, 255));
       }
       strip.show();
     });
@@ -367,7 +446,7 @@ void connectToWiFi() {
       int ledProgress = (progress * LED_COUNT) / total;
       for (int i = 0; i < LED_COUNT; i++) {
         if (i <= ledProgress) {
-          strip.setPixelColor(i, strip.Color(128, 0, 255));
+          strip.setPixelColor(i, statusColor(128, 0, 255));
         } else {
           strip.setPixelColor(i, strip.Color(0, 0, 0));
         }
@@ -377,20 +456,21 @@ void connectToWiFi() {
     ArduinoOTA.onEnd([]() {
       // OTA tamamlandığında yeşil flaş
       for (int i = 0; i < LED_COUNT; i++) {
-        strip.setPixelColor(i, strip.Color(0, 255, 0));
+        strip.setPixelColor(i, statusColor(0, 255, 0));
       }
       strip.show();
     });
     ArduinoOTA.onError([](ota_error_t error) {
       // Hata durumunda kırmızı
       for (int i = 0; i < LED_COUNT; i++) {
-        strip.setPixelColor(i, strip.Color(255, 0, 0));
+        strip.setPixelColor(i, statusColor(255, 0, 0));
       }
       strip.show();
     });
     ArduinoOTA.begin();
 
     server.begin();
+    networkServicesNeedRestart = false;
     
     Serial.println("UDP dinleme ve HTTP sunucu başlatıldı (Port 7777 + 80)");
   } else {
@@ -404,6 +484,10 @@ void connectToWiFi() {
 void setup() {
   Serial.begin(115200);
   delay(100);
+
+  bootResetReason = ESP.getResetReason();
+  bootResetReason.replace("\\", "/");
+  bootResetReason.replace("\"", "'");
   
   Serial.println();
   Serial.println("=== Wemos Ambilight Başlatılıyor ===");
@@ -474,6 +558,8 @@ void loop() {
         Serial.print("Wi-Fi baglantisi kesildi! Yeniden baglaniyor... (deneme ");
         Serial.print(reconnectCount);
         Serial.println("/12)");
+        server.stop();
+        networkServicesNeedRestart = true;
         WiFi.disconnect();
         delay(100);
         WiFi.begin(saved_ssid.c_str(), saved_password.c_str());
@@ -500,6 +586,12 @@ void loop() {
           return;
         }
       }
+      if (networkServicesNeedRestart) {
+        server.begin();
+        ArduinoOTA.begin();
+        networkServicesNeedRestart = false;
+        Serial.println("HTTP ve OTA servisleri yeniden baslatildi");
+      }
     }
 
     // Normal mod: HTTP isteklerini de işle
@@ -517,6 +609,7 @@ void loop() {
       int read = Udp.read(packetBuffer, len);
 
       if (read > 0) {
+        lastUdpActivityTime = millis();
         packetBuffer[read] = 0;
 
         // 1. Discovery Kontrolü
@@ -555,6 +648,8 @@ void loop() {
           strip.show();
           lastDataTime = millis();
           receivingData = true;
+          hasReceivedLedData = true;
+          dataRecoveryStage = 0;
           // Serial.println("LED verisi alındı"); // Performans için kaldırıldı (60fps bloklama önleme)
         } else {
           Serial.print("Tanınmayan paket, len:");
@@ -568,12 +663,39 @@ void loop() {
       return;
     }
 
+    // Daha önce veri akışı varken bağlantı sessizce takılırsa kademeli kurtarma uygula.
+    // İlk açılışta veya PC uygulaması hiç bağlanmamışsa bu blok çalışmaz.
+    if (hasReceivedLedData) {
+      unsigned long dataAge = millis() - lastDataTime;
+
+      if (dataAge >= RESTART_RECOVERY_DELAY_MS && dataRecoveryStage == 2) {
+        Serial.println("LED verisi 60 saniyedir yok. Wemos bir kez yeniden baslatiliyor...");
+        delay(100);
+        ESP.restart();
+      } else if (dataAge >= WIFI_RECOVERY_DELAY_MS && dataRecoveryStage == 1) {
+        Serial.println("LED verisi 20 saniyedir yok. Wi-Fi baglantisi yenileniyor...");
+        Udp.stop();
+        udpRunning = false;
+        server.stop();
+        networkServicesNeedRestart = true;
+        WiFi.disconnect();
+        delay(100);
+        WiFi.begin(saved_ssid.c_str(), saved_password.c_str());
+        wifiRecoveryCount++;
+        lastReconnectAttempt = millis();
+        dataRecoveryStage = 2;
+      } else if (dataAge >= UDP_RECOVERY_DELAY_MS && dataRecoveryStage == 0) {
+        restartUdpListener("5 saniyedir LED verisi yok");
+        dataRecoveryStage = 1;
+      }
+    }
+
     if (millis() - lastDataTime > 500) {
       receivingData = false;
       if (millis() - lastAnimUpdate > 50) {  // 80ms yerine 50ms - daha duyarlı animasyon
         lastAnimUpdate = millis();
         strip.clear();
-        uint8_t brightness[] = {255, 180, 120, 70, 35, 10};
+        uint8_t brightness[] = {64, 45, 30, 18, 9, 3};
 
         for (int t = 0; t < 6; t++) {
           int pos = (idleAnimPos - t + LED_COUNT) % LED_COUNT;

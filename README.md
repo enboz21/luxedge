@@ -4,7 +4,7 @@
     <strong>Monitör arkası LED aydınlatmasını otomatik olarak yöneten, Electron + Python tabanlı masaüstü uygulaması</strong>
   </p>
   <p align="center">
-    <img src="https://img.shields.io/badge/version-1.6.3-blue?style=flat-square" alt="Version">
+    <img src="https://img.shields.io/badge/version-1.6.4-blue?style=flat-square" alt="Version">
     <img src="https://img.shields.io/badge/platform-Windows-0078D6?style=flat-square&logo=windows&logoColor=white" alt="Platform">
     <img src="https://img.shields.io/badge/license-CC%20BY--NC%204.0-green?style=flat-square" alt="License">
     <img src="https://img.shields.io/badge/hardware-ESP8266%20(Wemos)-red?style=flat-square" alt="Hardware">
@@ -245,7 +245,12 @@ luxedge/
 
 ## 📝 Sürüm Geçmişi
 
-### v1.6.3 (Güncel)
+### v1.6.4 (Güncel)
+- 🛟 **Kademeli Wemos Kurtarma:** LED veri akışı kesildiğinde UDP soketi, Wi-Fi bağlantısı ve son çare olarak Wemos yeniden başlatması kontrollü aşamalarla uygulanır; yeniden başlatma döngüsü oluşmaz.
+- 📊 **Gelişmiş Cihaz Tanılama:** Wemos `/status` yanıtına RSSI, çalışma süresi, UDP durumu, son veri yaşı, kurtarma sayaçları ve reset sebebi eklendi.
+- 🔍 **Gerçek Bağlantı Doğrulaması:** PC uygulaması artık yalnız paket göndermeyi bağlantı kanıtı saymaz; Wemos'tan gelen UDP `PONG` veya HTTP `/status` yanıtını doğrular.
+- 🔋 **Düşük Güçlü Sistem Animasyonları:** Wi-Fi, hotspot, OTA ve bekleme göstergeleri normal ambilight parlaklığını değiştirmeden yaklaşık %25 güçle çalışır.
+- 🪟 **Windows Paketleme Düzeltmesi:** Konsolsuz `lush_backend.exe` başlatılırken `stdout/stderr` bulunmamasından kaynaklanan sessiz açılış hatası giderildi.
 - 🖥️ **Çoklu Monitör & Hedef Ekran Desteği:** Kontrol paneline "🖥️ Hedef Monitör / Ekran Seçimi" açılır kutusu eklendi. Sisteminizdeki tüm fiziksel monitörler (çözünürlük ve birincil etiketleriyle) otomatik tespit edilir. Çift monitörlü kurulumlarda sanal masaüstünün (`monitors[0]`) taranması engellendi; tam ekranda sol/son LED'lerin sönük kalması veya yanmaması sorunu kökten çözüldü.
 - 🔴 **Wemos UDP Kararlılığı & Bellek Sızıntısı Çözümü:** `Udp.begin(UDP_PORT)` çağrısının `loop()` içinde her döngüde kontrolsüz tekrarlanması engellendi (`udpRunning` durumu eklendi). Bellek tükenmesi (heap fragmentation), paket kaybı ve Watchdog Timer (WDT) resetleri durduruldu.
 - 📡 **Hotspot Modu UDP İyileştirmesi:** Wemos Hotspot (`Wemos_Setup`) modundayken de UDP dinleyicisi başlatılarak ilk kurulumda otomatik cihaz bulma (Discovery) yanıtlarının her iki modda da kusursuz çalışması sağlandı.

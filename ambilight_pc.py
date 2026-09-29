@@ -11,10 +11,11 @@ import logging
 import logging.handlers
 from collections import deque
 
-# Windows konsolunda emoji/Unicode desteği için encoding'i UTF-8'e ayarla
-if sys.stdout.encoding != 'utf-8':
+# Windows konsolunda emoji/Unicode desteği için encoding'i UTF-8'e ayarla.
+# PyInstaller --noconsole çalıştırmalarında stdout/stderr None olabilir.
+if sys.stdout is not None and hasattr(sys.stdout, 'buffer') and sys.stdout.encoding != 'utf-8':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-if sys.stderr.encoding != 'utf-8':
+if sys.stderr is not None and hasattr(sys.stderr, 'buffer') and sys.stderr.encoding != 'utf-8':
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 if sys.platform == 'win32':
     import winreg
@@ -1884,17 +1885,17 @@ def test_wemos_connection(ip, port=7777):
 def wemos_connectivity_checker(ip, port, cancel_event=None):
     """
     Arka planda Wemos'un erişilebilir olup olmadığını kontrol eder.
-    v1.6.3: Bağlantı durumu artık PING'e değil, gerçek veri akışına (actual_fps > 0) dayanır.
-    PING/HTTP sadece yardımcı onaydır; veri akışı varsa "bağlı" sayılır.
+    Bağlantı yalnız Wemos'tan alınan UDP PONG veya HTTP /status yanıtıyla
+    doğrulanır. PC'nin paket göndermesi cihazın paketi aldığını kanıtlamaz.
     """
     global running
     consecutive_fails = 0
     consecutive_successes = 0
-    MAX_FAILS = 5        # PING/HTTP başarısızlığı toleransı artırıldı
-    MIN_SUCCESS = 1      # Tek başarıyla "bağlı" sayılır (veri akışı varsa)
+    MAX_FAILS = 3
+    MIN_SUCCESS = 1
     was_connected = False
     last_status_change = 0.0
-    DEBOUNCE_SEC = 3.0   # Daha yumuşak geçiş
+    DEBOUNCE_SEC = 3.0
 
     log.info(f"[BAĞLANTI] Connectivity checker başlatıldı (Hedef: {ip}:{port})")
 
@@ -1908,24 +1909,15 @@ def wemos_connectivity_checker(ip, port, cancel_event=None):
 
     while running and (cancel_event is None or not cancel_event.is_set()):
         try:
-            # 1) Gerçek veri akışı var mı? (en güvenilir göstergeler)
+            # FPS ve gönderilen paketler yalnız tanılama içindir; erişilebilirlik
+            # kararı Wemos'un verdiği gerçek yanıta dayanır.
             status = get_status()
             actual_fps = status.get('actual_fps', 0)
-            errors = status.get('errors', 0)
             packets_sent = status.get('packets_sent', 0)
 
-            data_flowing = (actual_fps and actual_fps > 1.0) and (errors < 50)
-
-            # 2) Bağlantı kararı: veri akışı VARSA doğrudan bağlı sayılır (Wemos'u PING/HTTP ile yorma)
-            # Veri akışı YOKSA PING veya HTTP ile kontrol et
-            if data_flowing:
-                udp_ok = True
-                http_ok = False
-                wemos_reachable = True
-            else:
-                udp_ok = ping_wemos(ip, port=port, timeout=2)
-                http_ok = check_wemos_http(ip, timeout=2) if not udp_ok else False
-                wemos_reachable = udp_ok or http_ok
+            udp_ok = ping_wemos(ip, port=port, timeout=1.0)
+            http_ok = check_wemos_http(ip, timeout=1.5) if not udp_ok else False
+            wemos_reachable = udp_ok or http_ok
 
             if wemos_reachable:
                 consecutive_fails = 0
@@ -1933,8 +1925,11 @@ def wemos_connectivity_checker(ip, port, cancel_event=None):
                 if not was_connected and consecutive_successes >= MIN_SUCCESS:
                     now = time.time()
                     if now - last_status_change >= DEBOUNCE_SEC:
-                        reason = "veri akışı" if data_flowing else ("UDP PING" if udp_ok else "HTTP")
-                        log.info(f"[BAĞLANTI] ✅ Wemos'a bağlantı kuruldu ({ip}:{port}) - sebep: {reason}")
+                        reason = "UDP PONG" if udp_ok else "HTTP /status"
+                        log.info(
+                            f"[BAĞLANTI] ✅ Wemos doğrulandı ({ip}:{port}) - "
+                            f"yanıt: {reason}, PC FPS: {actual_fps}, gönderilen paket: {packets_sent}"
+                        )
                         was_connected = True
                         last_status_change = now
                         update_status("connection", "bağlı")
@@ -2233,7 +2228,7 @@ def main():
     global running, ambilight_thread, icon
     
     print("\n" + "="*60)
-    print("  AMBILIGHT PC v1.6.3 - Linux & Windows")
+    print("  AMBILIGHT PC v1.6.4 - Linux & Windows")
     print("="*60)
     
     # Konfigürasyonu yükle
