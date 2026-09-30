@@ -131,7 +131,7 @@ String htmlEscape(String input) {
 }
 
 bool isSupportedLedPin(uint8_t pin) {
-  return pin == D1 || pin == D2 || pin == D5 || pin == D6 || pin == D7;
+  return pin == D1 || pin == D2 || pin == D4 || pin == D5 || pin == D6 || pin == D7;
 }
 
 bool isValidLedCount(uint16_t count) {
@@ -141,6 +141,7 @@ bool isValidLedCount(uint16_t count) {
 String ledPinName(uint8_t pin) {
   if (pin == D1) return "D1";
   if (pin == D2) return "D2";
+  if (pin == D4) return "D4";
   if (pin == D5) return "D5";
   if (pin == D6) return "D6";
   if (pin == D7) return "D7";
@@ -150,6 +151,7 @@ String ledPinName(uint8_t pin) {
 int pinFromName(const String& name) {
   if (name == "D1") return D1;
   if (name == "D2") return D2;
+  if (name == "D4") return D4;
   if (name == "D5") return D5;
   if (name == "D6") return D6;
   if (name == "D7") return D7;
@@ -417,6 +419,7 @@ void handleRoot() {
     html += "<option value='' selected>Kullanilmiyor</option>";
     html += "<option value='D1'>D1 (GPIO5)</option>";
     html += "<option value='D2'>D2 (GPIO4)</option>";
+    html += "<option value='D4'>D4 (GPIO2)</option>";
     html += "<option value='D5'>D5 (GPIO14)</option>";
     html += "<option value='D6'>D6 (GPIO12)</option>";
     html += "<option value='D7'>D7 (GPIO13)</option>";
