@@ -54,6 +54,14 @@
 | 💾 **Config Otomatik Kayıt** | Ayarlar JSON dosyasında saklanır |
 | 🖱️ **Sistem Tepsisi** | Arka planda çalışır, tepsiden erişilir |
 
+### Çoklu Wemos geçişi (güvenli mod)
+
+- Mevcut tek-Wemos ayarı korunur; çoklu mod kapalıyken uygulama eski `wemos_ip` UDP yolunu kullanır.
+- Yeni cihazlar önce pasif kaydedilir. Her cihaz bir monitöre ve kendi dört kenar LED toplamına atanır.
+- Çoklu mod yalnız etkin cihazların Wemos `/status` içindeki `led_count` değeri uygulamadaki LED toplamıyla eşleştiğinde açılabilir.
+- Çoklu mod kapatıldığında uygulama hemen tekli güvenli moda döner. Cihazın bağlantı veya LED toplamı sorunu diğer doğrulanmış cihazların akışını durdurmaz.
+- Wemos pin/şerit ayarı firmware'in kendi kurulum sayfasında kalır; PC uygulaması yalnız toplam LED sayısını doğrular.
+
 ---
 
 ## 🛠️ Donanım Gereksinimleri
