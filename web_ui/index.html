@@ -1014,6 +1014,46 @@
                     </div>
                 </div>
 
+                <!-- Pasif Çoklu Wemos Cihaz Yönetimi -->
+                <div class="card grid-full" id="device-manager-card">
+                    <div class="card-header">
+                        <div class="card-title"><span>🖥️</span> Çoklu Wemos Cihazları</div>
+                        <div style="display:flex; align-items:center; gap:8px;">
+                            <button class="btn" onclick="scanDevices()" style="padding: 4px 8px; font-size: 11px;">🔍 Cihaz Tara</button>
+                            <button class="btn" onclick="validateDevices()" style="padding: 4px 8px; font-size: 11px;">🧪 Doğrula</button>
+                            <button class="btn btn-primary" id="multi-device-toggle" onclick="toggleMultiDeviceMode()" style="padding: 4px 8px; font-size: 11px;">Çoklu Modu Aç</button>
+                            <span id="multi-device-mode" style="font-size: 12px; color: var(--warning-color);">Pasif mod</span>
+                        </div>
+                    </div>
+                    <p style="font-size: 12px; color: var(--text-secondary); margin-bottom: 14px;">
+                        Buraya eklenen cihazlar kayıtlı kalır ancak çoklu cihaz modu açılana kadar LED verisi almaz.
+                        Mevcut <b>Ana Wemos</b> ayarlarını yukarıdaki tekli panelden yönetmeye devam edin.
+                    </p>
+                    <div id="device-list" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin-bottom: 16px;"></div>
+                    <div id="device-discovery-results" style="display:none; margin-bottom:16px; padding:10px; border:1px solid var(--border-color); border-radius:var(--radius-md);"></div>
+                    <div style="padding-top: 14px; border-top: 1px solid var(--border-color);">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                            <span id="device-form-title" style="font-size: 13px; color: var(--text-primary);">Yeni pasif cihaz ekle</span>
+                            <button class="btn" onclick="startNewDevice()" style="padding: 4px 8px; font-size: 11px;">＋ Yeni</button>
+                        </div>
+                        <input type="hidden" id="device-id">
+                        <div style="display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 10px;">
+                            <input type="text" id="device-name" class="input-control" placeholder="Cihaz adı">
+                            <input type="text" id="device-ip" class="input-control" placeholder="IP adresi">
+                            <input type="number" id="device-port" class="input-control" value="7777" min="1" max="65535" placeholder="Port">
+                            <select id="device-monitor-index" class="input-control"><option value="1">Monitör 1</option></select>
+                            <input type="number" id="device-top-leds" class="input-control" value="0" min="0" placeholder="Üst LED">
+                            <input type="number" id="device-bottom-leds" class="input-control" value="0" min="0" placeholder="Alt LED">
+                            <input type="number" id="device-left-leds" class="input-control" value="0" min="0" placeholder="Sol LED">
+                            <input type="number" id="device-right-leds" class="input-control" value="0" min="0" placeholder="Sağ LED">
+                        </div>
+                        <div style="display: flex; gap: 10px; margin-top: 10px;">
+                            <button class="btn btn-primary" id="save-device-button" onclick="saveDevice()">💾 Cihazı Kaydet</button>
+                            <button class="btn btn-danger" id="delete-device-button" onclick="deleteSelectedDevice()" style="display:none;">🗑️ Sil</button>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Firmware Güncelleme -->
                 <div class="card grid-full">
                     <div class="card-header">
@@ -1254,6 +1294,204 @@
         }
 
         // --- API Functions ---
+        let deviceRecords = [];
+        let deviceValidations = new Map();
+        let multiDeviceEnabled = false;
+        let availableMonitors = [];
+
+        function deviceFormValue(id, fallback = '') {
+            const element = document.getElementById(id);
+            return element ? element.value : fallback;
+        }
+
+        function setDeviceForm(device = null) {
+            const isLegacy = device && device.id === 'legacy-primary';
+            const leds = device?.leds || {};
+            document.getElementById('device-id').value = device?.id || '';
+            document.getElementById('device-name').value = device?.name || '';
+            document.getElementById('device-ip').value = device?.ip || '';
+            document.getElementById('device-port').value = device?.port || 7777;
+            document.getElementById('device-monitor-index').value = device?.monitor_index || 1;
+            document.getElementById('device-top-leds').value = leds.top || 0;
+            document.getElementById('device-bottom-leds').value = leds.bottom || 0;
+            document.getElementById('device-left-leds').value = leds.left || 0;
+            document.getElementById('device-right-leds').value = leds.right || 0;
+            document.getElementById('device-form-title').textContent = isLegacy
+                ? 'Ana Wemos — tekli panelden yönetilir'
+                : (device ? 'Pasif cihazı düzenle' : 'Yeni pasif cihaz ekle');
+            document.getElementById('save-device-button').disabled = isLegacy;
+            document.getElementById('delete-device-button').style.display = device && !isLegacy ? '' : 'none';
+            document.querySelectorAll('#device-manager-card input, #device-manager-card select').forEach(element => {
+                if (element.id !== 'device-id') element.disabled = isLegacy;
+            });
+        }
+
+        function renderDevices() {
+            const container = document.getElementById('device-list');
+            const mode = document.getElementById('multi-device-mode');
+            const toggle = document.getElementById('multi-device-toggle');
+            if (!container) return;
+            container.replaceChildren();
+            if (mode) mode.textContent = multiDeviceEnabled ? 'Çoklu mod etkin' : 'Pasif mod — LED verisi gönderilmiyor';
+            if (toggle) toggle.textContent = multiDeviceEnabled ? 'Çoklu Modu Kapat' : 'Çoklu Modu Aç';
+            if (!deviceRecords.length) {
+                const empty = document.createElement('span');
+                empty.style.color = 'var(--text-muted)';
+                empty.textContent = 'Henüz cihaz kaydı yok.';
+                container.appendChild(empty);
+                return;
+            }
+            deviceRecords.forEach(device => {
+                const card = document.createElement('button');
+                card.type = 'button';
+                card.className = 'btn';
+                card.style.cssText = 'text-align:left; padding:12px; border:1px solid var(--border-color);';
+                const leds = device.leds || {};
+                const total = ['top', 'bottom', 'left', 'right'].reduce((sum, edge) => sum + (Number(leds[edge]) || 0), 0);
+                const validation = deviceValidations.get(device.id);
+                const validationLabel = validation
+                    ? (validation.compatible ? ' | ✓ LED eşleşiyor' : ` | ⚠ ${validation.message}`)
+                    : '';
+                card.textContent = `${device.name} — ${device.ip}:${device.port} | Monitör ${device.monitor_index} | ${total} LED${device.id === 'legacy-primary' ? ' | Ana cihaz' : ' | Pasif'}${validationLabel}`;
+                card.addEventListener('click', () => setDeviceForm(device));
+                container.appendChild(card);
+            });
+        }
+
+        function renderDeviceMonitorOptions() {
+            const select = document.getElementById('device-monitor-index');
+            if (!select || !availableMonitors.length) return;
+            const currentValue = select.value || '1';
+            select.replaceChildren();
+            availableMonitors.forEach(monitor => {
+                const option = document.createElement('option');
+                option.value = monitor.index;
+                option.textContent = monitor.name || `Monitör ${monitor.index}`;
+                select.appendChild(option);
+            });
+            select.value = currentValue;
+        }
+
+        async function fetchDevices() {
+            try {
+                const result = await api.getDevices();
+                if (!result.success) throw new Error(result.message || 'Cihazlar yüklenemedi');
+                deviceRecords = result.devices || [];
+                multiDeviceEnabled = Boolean(result.multi_device_enabled);
+                renderDevices();
+            } catch (error) {
+                const container = document.getElementById('device-list');
+                if (container) container.textContent = 'Cihaz kayıtları yüklenemedi.';
+            }
+        }
+
+        async function scanDevices() {
+            const results = document.getElementById('device-discovery-results');
+            try {
+                showToast('Ağdaki Wemos cihazları aranıyor...', 'info');
+                const result = await api.scanDevices();
+                if (!result.success) throw new Error(result.message || 'Tarama başarısız');
+                results.replaceChildren();
+                results.style.display = '';
+                if (!result.devices.length) {
+                    results.textContent = 'Cihaz bulunamadı. Hiçbir ayar değiştirilmedi.';
+                    return;
+                }
+                const title = document.createElement('div');
+                title.textContent = 'Bulunan cihazı seçerek forma aktarın:';
+                title.style.marginBottom = '8px';
+                results.appendChild(title);
+                result.devices.forEach(found => {
+                    const button = document.createElement('button');
+                    button.className = 'btn';
+                    button.style.marginRight = '8px';
+                    button.textContent = `${found.ip}:${found.port}`;
+                    button.addEventListener('click', () => {
+                        startNewDevice();
+                        document.getElementById('device-ip').value = found.ip;
+                        document.getElementById('device-port').value = found.port;
+                    });
+                    results.appendChild(button);
+                });
+                showToast(`${result.devices.length} cihaz bulundu; seçim yapmadan kayıt oluşturulmaz.`, 'success');
+            } catch (error) {
+                showToast(error.message || 'Tarama başarısız', 'error');
+            }
+        }
+
+        async function validateDevices() {
+            try {
+                const result = await api.validateDevices();
+                if (!result.success) throw new Error(result.message || 'Doğrulama başarısız');
+                deviceValidations = new Map((result.devices || []).map(device => [device.id, device]));
+                renderDevices();
+                const incompatible = (result.devices || []).filter(device => !device.compatible).length;
+                showToast(incompatible ? `${incompatible} cihazın LED toplamı doğrulanamadı.` : 'Tüm cihazların LED toplamı eşleşiyor.', incompatible ? 'error' : 'success');
+            } catch (error) {
+                showToast(error.message || 'Doğrulama başarısız', 'error');
+            }
+        }
+
+        async function toggleMultiDeviceMode() {
+            const target = !multiDeviceEnabled;
+            if (target && !confirm('Çoklu mod açıldığında yalnız doğrulanmış etkin cihazlara LED verisi gönderilir. Devam edilsin mi?')) return;
+            try {
+                const result = await api.setMultiDeviceMode(target);
+                if (!result.success) throw new Error(result.message || 'Çoklu mod değiştirilemedi');
+                multiDeviceEnabled = result.multi_device_enabled;
+                renderDevices();
+                showToast(multiDeviceEnabled ? 'Çoklu mod etkinleştirildi' : 'Tekli güvenli moda dönüldü', 'success');
+            } catch (error) {
+                showToast(error.message || 'Çoklu mod değiştirilemedi', 'error');
+            }
+        }
+
+        function startNewDevice() {
+            setDeviceForm();
+        }
+
+        function getDevicePayload() {
+            return {
+                name: deviceFormValue('device-name').trim(),
+                ip: deviceFormValue('device-ip').trim(),
+                port: Number(deviceFormValue('device-port', 7777)),
+                monitor_index: Number(deviceFormValue('device-monitor-index', 1)),
+                leds: {
+                    top: Number(deviceFormValue('device-top-leds', 0)),
+                    bottom: Number(deviceFormValue('device-bottom-leds', 0)),
+                    left: Number(deviceFormValue('device-left-leds', 0)),
+                    right: Number(deviceFormValue('device-right-leds', 0)),
+                },
+            };
+        }
+
+        async function saveDevice() {
+            const id = deviceFormValue('device-id');
+            try {
+                const result = id ? await api.updateDevice(id, getDevicePayload()) : await api.createDevice(getDevicePayload());
+                if (!result.success) throw new Error(result.message || 'Cihaz kaydedilemedi');
+                showToast(id ? 'Pasif cihaz güncellendi' : 'Pasif cihaz eklendi', 'success');
+                await fetchDevices();
+                setDeviceForm(result.device);
+            } catch (error) {
+                showToast(error.message || 'Cihaz kaydedilemedi', 'error');
+            }
+        }
+
+        async function deleteSelectedDevice() {
+            const id = deviceFormValue('device-id');
+            if (!id || id === 'legacy-primary' || !confirm('Bu pasif cihaz silinsin mi?')) return;
+            try {
+                const result = await api.deleteDevice(id);
+                if (!result.success) throw new Error(result.message || 'Cihaz silinemedi');
+                showToast('Pasif cihaz silindi', 'success');
+                startNewDevice();
+                await fetchDevices();
+            } catch (error) {
+                showToast(error.message || 'Cihaz silinemedi', 'error');
+            }
+        }
+
         async function fetchStatus() {
             try {
                 const status = await api.getStatus();
@@ -1334,6 +1572,11 @@
         }
 
         function updateUI(status) {
+            if (Array.isArray(status.monitors)) {
+                availableMonitors = status.monitors;
+                renderDeviceMonitorOptions();
+            }
+
             // Bağlantı Durumu — FPS > 0 ise paketler gönderiliyor = bağlı
             const isSendingData = status.actual_fps && status.actual_fps > 0;
             const isConnected = status.connection === 'bağlı' || isSendingData;
@@ -1755,6 +1998,8 @@
         // --- Loop ---
         setInterval(fetchStatus, 1500);
         setInterval(fetchLogs, 2000);  // Log paneli açıkken 2 saniyede bir güncelle
+        startNewDevice();
+        fetchDevices();
         fetchStatus();
 
     </script>

@@ -16,6 +16,15 @@ contextBridge.exposeInMainWorld('luxedge', {
     saveConfig: (config) => ipcRenderer.invoke('save-config', config),
     getLogs: () => ipcRenderer.invoke('get-logs'),
 
+    // Pasif çoklu-Wemos cihaz kayıtları
+    getDevices: () => ipcRenderer.invoke('get-devices'),
+    scanDevices: () => ipcRenderer.invoke('scan-devices'),
+    validateDevices: () => ipcRenderer.invoke('validate-devices'),
+    setMultiDeviceMode: (enabled) => ipcRenderer.invoke('set-multi-device-mode', enabled),
+    createDevice: (device) => ipcRenderer.invoke('create-device', device),
+    updateDevice: (id, device) => ipcRenderer.invoke('update-device', id, device),
+    deleteDevice: (id) => ipcRenderer.invoke('delete-device', id),
+
     // Uygulama
     restartApp: () => ipcRenderer.invoke('restart-app'),
 

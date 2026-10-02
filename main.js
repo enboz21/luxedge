@@ -57,6 +57,38 @@ function pythonPost(endpoint, body = {}, timeout = 5000) {
     });
 }
 
+function pythonPut(endpoint, body = {}, timeout = 5000) {
+    return pythonRequest(endpoint, 'PUT', body, timeout);
+}
+
+function pythonDelete(endpoint, timeout = 5000) {
+    return pythonRequest(endpoint, 'DELETE', null, timeout);
+}
+
+function pythonRequest(endpoint, method, body, timeout) {
+    return new Promise((resolve, reject) => {
+        const jsonData = body === null ? null : JSON.stringify(body);
+        const headers = { 'Content-Type': 'application/json' };
+        if (jsonData !== null) headers['Content-Length'] = Buffer.byteLength(jsonData);
+        const options = {
+            hostname: '127.0.0.1', port: PYTHON_PORT,
+            path: endpoint, method, timeout, headers
+        };
+        const req = http.request(options, (res) => {
+            let data = '';
+            res.on('data', chunk => data += chunk);
+            res.on('end', () => {
+                try { resolve(JSON.parse(data)); }
+                catch (e) { resolve(data); }
+            });
+        });
+        req.on('error', reject);
+        req.on('timeout', () => { req.destroy(); reject(new Error('Zaman aşımı')); });
+        if (jsonData !== null) req.write(jsonData);
+        req.end();
+    });
+}
+
 // ============================================================
 // PYTHON BACKEND
 // ============================================================
@@ -316,6 +348,41 @@ function registerIpcHandlers() {
     ipcMain.handle('save-config', async (event, config) => {
         try { return await pythonPost('/api/config', config); }
         catch (e) { return { success: false, message: "Kayıt başarısız" }; }
+    });
+
+    ipcMain.handle('get-devices', async () => {
+        try { return await pythonGet('/api/devices', 2000); }
+        catch (e) { return { success: false, devices: [], message: "Cihazlar yüklenemedi" }; }
+    });
+
+    ipcMain.handle('scan-devices', async () => {
+        try { return await pythonGet('/api/devices/scan', 6000); }
+        catch (e) { return { success: false, devices: [], message: "Cihaz taraması başarısız" }; }
+    });
+
+    ipcMain.handle('validate-devices', async () => {
+        try { return await pythonGet('/api/devices/validation', 8000); }
+        catch (e) { return { success: false, devices: [], message: "Cihaz doğrulaması başarısız" }; }
+    });
+
+    ipcMain.handle('set-multi-device-mode', async (event, enabled) => {
+        try { return await pythonPost('/api/devices/mode', { enabled }, 10000); }
+        catch (e) { return { success: false, message: "Çoklu mod değiştirilemedi" }; }
+    });
+
+    ipcMain.handle('create-device', async (event, device) => {
+        try { return await pythonPost('/api/devices', device); }
+        catch (e) { return { success: false, message: "Cihaz kaydedilemedi" }; }
+    });
+
+    ipcMain.handle('update-device', async (event, id, device) => {
+        try { return await pythonPut(`/api/devices/${encodeURIComponent(id)}`, device); }
+        catch (e) { return { success: false, message: "Cihaz güncellenemedi" }; }
+    });
+
+    ipcMain.handle('delete-device', async (event, id) => {
+        try { return await pythonDelete(`/api/devices/${encodeURIComponent(id)}`); }
+        catch (e) { return { success: false, message: "Cihaz silinemedi" }; }
     });
 
     ipcMain.handle('get-logs', async () => {

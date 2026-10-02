@@ -7,6 +7,9 @@ import json
 import os
 import sys
 import io
+import copy
+import ipaddress
+import uuid
 import logging
 import logging.handlers
 from collections import deque
@@ -130,6 +133,11 @@ except ImportError:
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ambilight_config.json")
 
+# Çoklu cihaz geçişi için config şeması. Bu aşamada worker hâlâ eski tekli
+# alanları kullanır; yeni şema yalnız sonraki API/UI adımlarına hazırlıktır.
+MULTI_DEVICE_CONFIG_SCHEMA_VERSION = 2
+LEGACY_PRIMARY_DEVICE_ID = "legacy-primary"
+
 import shutil
 
 def get_config_path():
@@ -213,6 +221,166 @@ def save_config(config):
         except Exception:
             pass
         return False
+
+
+def legacy_config_to_primary_device(config):
+    """Tekli config'i geçici olarak ilk çoklu-cihaz kaydına dönüştür.
+
+    Bu fonksiyon dosya yazmaz ve aldığı config'i değiştirmez. Böylece sonraki
+    geçiş adımları eski kurulumları kesintisiz okuyabilir.
+    """
+    if not isinstance(config, dict):
+        return None
+
+    ip = str(config.get("wemos_ip", "")).strip()
+    if not ip:
+        return None
+
+    return {
+        "id": LEGACY_PRIMARY_DEVICE_ID,
+        "name": "Ana Wemos",
+        "ip": ip,
+        "port": config.get("wemos_port", 7777),
+        "role": "ambilight",
+        "monitor_index": config.get("led_monitor_index", 1),
+        "leds": {
+            "top": config.get("top_leds", 0),
+            "bottom": config.get("bottom_leds", 0),
+            "left": config.get("left_leds", 0),
+            "right": config.get("right_leds", 0),
+        },
+        "enabled": True,
+    }
+
+
+def normalize_config_for_multi_device(config):
+    """Config'i çoklu-cihaz şeması için bellekte hazırla.
+
+    Eski tekli alanlar korunur; bu aşamada config diske yazılmaz ve worker'ın
+    kullandığı tekli UDP davranışı değiştirilmez.
+    """
+    normalized = copy.deepcopy(config) if isinstance(config, dict) else {}
+    normalized.setdefault("schema_version", MULTI_DEVICE_CONFIG_SCHEMA_VERSION)
+    normalized.setdefault("multi_device_enabled", False)
+
+    if not isinstance(normalized.get("wemos_devices"), list):
+        primary_device = legacy_config_to_primary_device(normalized)
+        normalized["wemos_devices"] = [primary_device] if primary_device else []
+
+    return normalized
+
+
+def _device_integer(value, field_name, minimum=0, maximum=None):
+    """Cihaz payload'ındaki bir tam sayıyı doğrula."""
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} tam sayı olmalı")
+    try:
+        result = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{field_name} tam sayı olmalı")
+    if result < minimum or (maximum is not None and result > maximum):
+        raise ValueError(f"{field_name} geçerli aralıkta değil")
+    return result
+
+
+def validate_wemos_device(payload, device_id=None, default_enabled=False):
+    """Pasif cihaz kayıtları için güvenli ve tutarlı bir şema üret."""
+    if not isinstance(payload, dict):
+        raise ValueError("Cihaz verisi JSON nesnesi olmalı")
+
+    name = str(payload.get("name", "")).strip()
+    if not name or len(name) > 64:
+        raise ValueError("Cihaz adı 1-64 karakter olmalı")
+
+    ip = str(payload.get("ip", "")).strip()
+    try:
+        if ipaddress.ip_address(ip).version != 4:
+            raise ValueError
+    except ValueError:
+        raise ValueError("Geçerli bir IPv4 adresi girin")
+
+    role = payload.get("role", "ambilight")
+    if role != "ambilight":
+        raise ValueError("Bu sürüm yalnız ambilight cihazlarını destekler")
+
+    leds_payload = payload.get("leds", {})
+    if not isinstance(leds_payload, dict):
+        raise ValueError("leds nesnesi gerekli")
+    leds = {
+        edge: _device_integer(leds_payload.get(edge, 0), f"leds.{edge}")
+        for edge in ("top", "bottom", "left", "right")
+    }
+
+    enabled = payload.get("enabled", default_enabled)
+    if not isinstance(enabled, bool):
+        raise ValueError("enabled doğru veya yanlış olmalı")
+
+    return {
+        "id": device_id or uuid.uuid4().hex,
+        "name": name,
+        "ip": ip,
+        "port": _device_integer(payload.get("port", 7777), "port", 1, 65535),
+        "role": role,
+        "monitor_index": _device_integer(payload.get("monitor_index", 1), "monitor_index", 1),
+        "leds": leds,
+        "enabled": enabled,
+    }
+
+
+def create_wemos_device(config, payload):
+    """Yeni cihazı çoklu-device config'e pasif olarak ekle."""
+    normalized = normalize_config_for_multi_device(config)
+    device = validate_wemos_device(payload, default_enabled=False)
+    if any(existing.get("ip") == device["ip"] for existing in normalized["wemos_devices"]):
+        raise ValueError("Bu IP adresi zaten kayıtlı")
+    normalized["wemos_devices"].append(device)
+    return normalized, device
+
+
+def update_wemos_device(config, device_id, payload):
+    """Bir cihazı güncelle; kimliğini değiştirmeden doğrulamayı uygula."""
+    normalized = normalize_config_for_multi_device(config)
+    for index, existing in enumerate(normalized["wemos_devices"]):
+        if existing.get("id") != device_id:
+            continue
+        merged = copy.deepcopy(existing)
+        merged.update(payload if isinstance(payload, dict) else {})
+        if isinstance(payload, dict) and "leds" in payload:
+            merged["leds"] = payload["leds"]
+        device = validate_wemos_device(merged, device_id=device_id, default_enabled=False)
+        if any(other.get("id") != device_id and other.get("ip") == device["ip"]
+               for other in normalized["wemos_devices"]):
+            raise ValueError("Bu IP adresi zaten kayıtlı")
+        normalized["wemos_devices"][index] = device
+        return normalized, device
+    raise ValueError("Cihaz bulunamadı")
+
+
+def delete_wemos_device(config, device_id):
+    """Cihazı config'ten kaldır; tekli worker davranışına dokunma."""
+    normalized = normalize_config_for_multi_device(config)
+    remaining = [device for device in normalized["wemos_devices"] if device.get("id") != device_id]
+    if len(remaining) == len(normalized["wemos_devices"]):
+        raise ValueError("Cihaz bulunamadı")
+    normalized["wemos_devices"] = remaining
+    return normalized
+
+
+def set_multi_device_mode(config, enabled):
+    """Çoklu modu yalnız etkin ve firmware LED toplamı doğrulanmış cihazlarla aç."""
+    if not isinstance(enabled, bool):
+        raise ValueError("enabled doğru veya yanlış olmalı")
+    normalized = normalize_config_for_multi_device(config)
+    if enabled:
+        active_devices = [device for device in normalized["wemos_devices"] if device.get("enabled")]
+        if not active_devices:
+            raise ValueError("Etkinleştirilecek cihaz yok")
+        invalid = [get_device_validation(device) for device in active_devices]
+        invalid = [result for result in invalid if not result["compatible"]]
+        if invalid:
+            raise ValueError("Tüm etkin cihazların LED toplamı doğrulanmalı")
+    normalized["multi_device_enabled"] = enabled
+    return normalized
 
 # ============================================================
 # AĞ YARDIMCI FONKSİYONLARI
@@ -520,6 +688,46 @@ def find_wemos_ip_on_network(progress_callback=None):
                 print(f"Unicast tarama hatası: {e}")
 
     return found_ip
+
+
+def find_all_wemos_on_network(timeout=3.0):
+    """UDP discovery yanıtlarını toplayıp tüm benzersiz Wemos IP'lerini döndür."""
+    discovered = set()
+    local_ip = get_local_ip()
+    broadcast_list = ['255.255.255.255']
+    if local_ip:
+        parts = local_ip.split('.')
+        parts[3] = '255'
+        broadcast_list.append('.'.join(parts))
+
+    try:
+        discovery_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        discovery_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        discovery_socket.settimeout(0.25)
+        discovery_socket.bind(('', 0))
+        for target_ip in broadcast_list:
+            discovery_socket.sendto(b"AMBLIGHT_DISCOVERY", (target_ip, 7777))
+
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                data, addr = discovery_socket.recvfrom(1024)
+                if b"AMBLIGHT_RESPONSE" not in data:
+                    continue
+                response = data.decode('utf-8', errors='ignore')
+                reported_ip = response.split(':', 1)[1].strip() if ':' in response else addr[0]
+                if ipaddress.ip_address(reported_ip).version != 4:
+                    continue
+                discovered.add(reported_ip)
+            except socket.timeout:
+                continue
+            except (ValueError, OSError):
+                continue
+        discovery_socket.close()
+    except OSError:
+        pass
+
+    return sorted(discovered, key=lambda ip: tuple(map(int, ip.split('.'))))
 
 def check_wemos_connection(ip, port=7777, timeout=2):
     """Wemos'un erişilebilir olup olmadığını kontrol eder"""
@@ -1270,7 +1478,7 @@ def is_fullscreen():
         _fullscreen_cache['time'] = now
         return result_val
 
-def grab_edge_colors(top_leds, bottom_leds, left_leds, right_leds, edge_width, edge_offset, sct):
+def grab_edge_colors(top_leds, bottom_leds, left_leds, right_leds, edge_width, edge_offset, sct, monitor_index=None):
     """
     Ekran kenarlarından renkleri toplar.
     v1.6.1: Tamamen numpy vektörizasyonu ile yeniden yazıldı.
@@ -1278,7 +1486,7 @@ def grab_edge_colors(top_leds, bottom_leds, left_leds, right_leds, edge_width, e
     """
     if sct is None or not hasattr(sct, 'monitors'):
         sct = mss()
-    led_idx = get_led_monitor_index(sct)
+    led_idx = monitor_index if monitor_index is not None else get_led_monitor_index(sct)
     if not hasattr(sct, 'monitors') or led_idx >= len(sct.monitors) or led_idx <= 0:
         led_idx = get_primary_monitor_index(sct)
     monitor = sct.monitors[led_idx]
@@ -1335,6 +1543,26 @@ def grab_edge_colors(top_leds, bottom_leds, left_leds, right_leds, edge_width, e
                 final_colors.append((0, 0, 0))
 
     return final_colors
+
+
+def build_device_frame(device, edge_width, edge_offset, capture):
+    """Bir cihazın atanmış monitörü için UDP RGB paketini hesapla.
+
+    Bu yardımcı yalnız paket üretir; gönderim yapmaz. Gölge modunda tekli
+    worker'a dokunmadan çoklu ekran hesaplamasını doğrulamak için kullanılır.
+    """
+    leds = device.get("leds", {})
+    colors = grab_edge_colors(
+        int(leds.get("top", 0)),
+        int(leds.get("bottom", 0)),
+        int(leds.get("left", 0)),
+        int(leds.get("right", 0)),
+        edge_width,
+        edge_offset,
+        capture,
+        monitor_index=int(device.get("monitor_index", 1)),
+    )
+    return bytes(channel for color in colors for channel in color)
 
 # ============================================================
 # GLOBAL DEĞİŞKENLER VE DURUM
@@ -1428,6 +1656,12 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
                 self.serve_html()
             elif self.path == '/api/status':
                 self.serve_status()
+            elif self.path == '/api/devices':
+                self.handle_devices_list()
+            elif self.path == '/api/devices/scan':
+                self.handle_devices_scan()
+            elif self.path == '/api/devices/validation':
+                self.handle_devices_validation()
             elif self.path == '/api/scan':
                 self.serve_scan()
             elif self.path == '/api/logs':
@@ -1443,6 +1677,10 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
         try:
             if self.path == '/api/config':
                 self.handle_config_update()
+            elif self.path == '/api/devices/mode':
+                self.handle_devices_mode()
+            elif self.path == '/api/devices':
+                self.handle_device_create()
             elif self.path == '/api/restart':
                 self.handle_restart()
             elif self.path == '/api/wemos/restart':
@@ -1457,6 +1695,40 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
                 self.send_error(404)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
+
+    def do_PUT(self):
+        try:
+            device_id = self._device_id_from_path()
+            if device_id:
+                self.handle_device_update(device_id)
+            else:
+                self.send_error(404)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
+
+    def do_DELETE(self):
+        try:
+            device_id = self._device_id_from_path()
+            if device_id:
+                self.handle_device_delete(device_id)
+            else:
+                self.send_error(404)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
+
+    def _read_json_body(self):
+        content_length = int(self.headers.get('Content-Length', 0))
+        if content_length <= 0:
+            raise ValueError("JSON gövdesi gerekli")
+        return json.loads(self.rfile.read(content_length).decode('utf-8'))
+
+    def _device_id_from_path(self):
+        path = urllib.parse.urlparse(self.path).path
+        prefix = "/api/devices/"
+        if not path.startswith(prefix):
+            return None
+        device_id = urllib.parse.unquote(path[len(prefix):])
+        return device_id if device_id and "/" not in device_id else None
     
     def serve_html(self):
         """Ana HTML sayfasını sun"""
@@ -1501,6 +1773,68 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
         with _log_buffer_lock:
             logs = list(_log_buffer)
         self._safe_send_json({"logs": logs})
+
+    def handle_devices_list(self):
+        """Pasif çoklu-cihaz kayıtlarını döndür; tekli config'i değiştirme."""
+        config = normalize_config_for_multi_device(load_config() or {})
+        self._safe_send_json({
+            "success": True,
+            "schema_version": config["schema_version"],
+            "multi_device_enabled": config["multi_device_enabled"],
+            "devices": config["wemos_devices"],
+        })
+
+    def handle_devices_scan(self):
+        """Ağdaki cihazları listeler; kullanıcı seçmeden config'e yazmaz."""
+        devices = [{"ip": ip, "port": 7777} for ip in find_all_wemos_on_network()]
+        self._safe_send_json({"success": True, "devices": devices})
+
+    def handle_devices_validation(self):
+        """Kayıtlı cihazların firmware LED toplamlarını doğrular."""
+        config = normalize_config_for_multi_device(load_config() or {})
+        validations = [get_device_validation(device) for device in config["wemos_devices"]]
+        self._safe_send_json({"success": True, "devices": validations})
+
+    def handle_devices_mode(self):
+        try:
+            payload = self._read_json_body()
+            config = set_multi_device_mode(load_config() or {}, payload.get("enabled"))
+            if not save_config(config):
+                raise ValueError("Çoklu mod kaydedilemedi")
+            result = {"success": True, "multi_device_enabled": config["multi_device_enabled"]}
+        except Exception as e:
+            result = {"success": False, "message": str(e)}
+        self._safe_send_json(result)
+
+    def handle_device_create(self):
+        try:
+            config, device = create_wemos_device(load_config() or {}, self._read_json_body())
+            if not save_config(config):
+                raise ValueError("Cihaz kaydedilemedi")
+            result = {"success": True, "device": device, "message": "Cihaz pasif olarak eklendi."}
+        except Exception as e:
+            result = {"success": False, "message": str(e)}
+        self._safe_send_json(result)
+
+    def handle_device_update(self, device_id):
+        try:
+            config, device = update_wemos_device(load_config() or {}, device_id, self._read_json_body())
+            if not save_config(config):
+                raise ValueError("Cihaz kaydedilemedi")
+            result = {"success": True, "device": device, "message": "Cihaz güncellendi."}
+        except Exception as e:
+            result = {"success": False, "message": str(e)}
+        self._safe_send_json(result)
+
+    def handle_device_delete(self, device_id):
+        try:
+            config = delete_wemos_device(load_config() or {}, device_id)
+            if not save_config(config):
+                raise ValueError("Cihaz kaydedilemedi")
+            result = {"success": True, "message": "Cihaz silindi."}
+        except Exception as e:
+            result = {"success": False, "message": str(e)}
+        self._safe_send_json(result)
 
     def serve_scan(self):
         """Ağ taraması yap ve sonucu döndür"""
@@ -1863,6 +2197,40 @@ def check_wemos_http(ip, timeout=2):
         pass
     return False
 
+
+def get_wemos_status(ip, timeout=2):
+    """Bir Wemos'un firmware durumunu döndür; erişilemezse None."""
+    try:
+        url = f"http://{ip}/status"
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            data = json.loads(response.read().decode('utf-8'))
+        return data if isinstance(data, dict) and 'ip' in data else None
+    except Exception:
+        return None
+
+
+def get_device_validation(device, timeout=2):
+    """PC kenar LED toplamını Wemos firmware /status değeriyle karşılaştır."""
+    leds = device.get("leds", {}) if isinstance(device, dict) else {}
+    expected_led_count = sum(int(leds.get(edge, 0)) for edge in ("top", "bottom", "left", "right"))
+    status = get_wemos_status(device.get("ip", ""), timeout=timeout)
+    firmware_led_count = status.get("led_count") if status else None
+    compatible = isinstance(firmware_led_count, int) and firmware_led_count == expected_led_count
+    if status is None:
+        message = "Wemos /status erişilemiyor"
+    elif compatible:
+        message = "LED toplamı eşleşiyor"
+    else:
+        message = f"Uygulama: {expected_led_count}, firmware: {firmware_led_count} LED"
+    return {
+        "id": device.get("id"),
+        "reachable": status is not None,
+        "compatible": compatible,
+        "expected_led_count": expected_led_count,
+        "firmware_led_count": firmware_led_count,
+        "message": message,
+    }
+
 def test_wemos_connection(ip, port=7777):
     """
     Wemos'a bağlantı durumu test eder:
@@ -2040,6 +2408,9 @@ def ambilight_worker(config):
     # Periyodik config kontrol sayacı
     config_check_timer = time.time()
     CONFIG_CHECK_INTERVAL = 3  # Her 3 saniyede bir config kontrol et
+    shadow_frame_summary = None
+    multi_device_mode = False
+    active_multi_devices = []
     
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -2141,9 +2512,47 @@ def ambilight_worker(config):
                             daemon=True
                         )
                         connectivity_thread.start()
-            
+
+                    # Çoklu cihaz yolunu gölge modda doğrula. Bu aşamada
+                    # üretilen frame hiçbir sokete gönderilmez.
+                    shadow_frames = []
+                    for shadow_device in normalize_config_for_multi_device(new_config)["wemos_devices"]:
+                        try:
+                            shadow_frame = build_device_frame(
+                                shadow_device, EDGE_WIDTH, EDGE_OFFSET, sct
+                            )
+                            shadow_frames.append({
+                                "id": shadow_device["id"],
+                                "bytes": len(shadow_frame),
+                                "ip": shadow_device["ip"],
+                            })
+                        except Exception as shadow_error:
+                            log.warning(
+                                f"[SHADOW] {shadow_device.get('id', 'bilinmeyen')} frame hesaplanamadı: {shadow_error}"
+                            )
+                    summary = tuple((item["id"], item["bytes"]) for item in shadow_frames)
+                    if summary != shadow_frame_summary:
+                        shadow_frame_summary = summary
+                        log.info(f"[SHADOW] Çoklu cihaz frame planı: {shadow_frames}")
+                    update_status("shadow_device_frames", shadow_frames)
+
+                    multi_config = normalize_config_for_multi_device(new_config)
+                    multi_device_mode = multi_config["multi_device_enabled"]
+                    active_multi_devices = []
+                    if multi_device_mode:
+                        for multi_device in multi_config["wemos_devices"]:
+                            if not multi_device.get("enabled"):
+                                continue
+                            validation = get_device_validation(multi_device)
+                            if validation["compatible"]:
+                                active_multi_devices.append(multi_device)
+                            else:
+                                log.warning(f"[MULTI] {multi_device['id']} devre dışı: {validation['message']}")
+                    update_status("multi_device_enabled", multi_device_mode)
+                    update_status("active_multi_devices", [device["id"] for device in active_multi_devices])
+
             # IP ayarlanmamışsa bekle
-            if not WEMOS_IP:
+            if not WEMOS_IP and not multi_device_mode:
                 time.sleep(1)
                 continue
 
@@ -2178,8 +2587,17 @@ def ambilight_worker(config):
                         for r, g, b in colors:
                             data += bytes([r, g, b])
 
-                sock.sendto(data, (WEMOS_IP, WEMOS_PORT))
-                packets_sent += 1
+                if multi_device_mode:
+                    for multi_device in active_multi_devices:
+                        if IDLE_MODE and not is_full:
+                            multi_data = bytes(data[:3]) * sum(multi_device["leds"].values())
+                        else:
+                            multi_data = build_device_frame(multi_device, EDGE_WIDTH, EDGE_OFFSET, sct)
+                        sock.sendto(multi_data, (multi_device["ip"], multi_device["port"]))
+                        packets_sent += 1
+                else:
+                    sock.sendto(data, (WEMOS_IP, WEMOS_PORT))
+                    packets_sent += 1
                 fps_counter += 1
 
                 # Her 2 saniyede bir FPS ve paket sayısını güncelle
