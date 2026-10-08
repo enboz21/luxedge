@@ -5,48 +5,29 @@ read or overwrite the user's active LuxEdge config while the multi-device work
 is being introduced in later steps.
 """
 
-import importlib
-import importlib.util
 import inspect
 import json
-import sys
+import io
+from backend_fixture import backend, TEST_ROOT
 import tempfile
-import threading
-import types
-import urllib.request
 import unittest
 from pathlib import Path
 from unittest import mock
 
 
-def _install_optional_dependency_stubs():
-    """Allow config-level checks to import the backend without capture libraries."""
-    if importlib.util.find_spec("mss") is None:
-        mss_module = types.ModuleType("mss")
-        mss_module.mss = object
-        sys.modules["mss"] = mss_module
-
-    if importlib.util.find_spec("PIL") is None:
-        pil_module = types.ModuleType("PIL")
-        image_module = types.ModuleType("PIL.Image")
-        image_module.Image = object
-        pil_module.Image = image_module
-        sys.modules["PIL"] = pil_module
-        sys.modules["PIL.Image"] = image_module
-
-
-_install_optional_dependency_stubs()
-
-
 class SingleWemosRegressionTests(unittest.TestCase):
     def setUp(self):
-        self.temp_dir = tempfile.TemporaryDirectory()
+        self.temp_dir = tempfile.TemporaryDirectory(dir=TEST_ROOT)
         self.config_path = Path(self.temp_dir.name) / "ambilight_config.json"
-        self.backend = importlib.import_module("ambilight_pc")
+        self.backend = backend
         self.config_path_patch = mock.patch.object(
             self.backend, "get_config_path", return_value=str(self.config_path)
         )
         self.config_path_patch.start()
+        for target in ('socket.socket', 'urllib.request.urlopen', 'subprocess.run', 'mss'):
+            patcher = mock.patch('ambilight_pc.' + target, side_effect=AssertionError('External access forbidden: ' + target))
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def tearDown(self):
         self.config_path_patch.stop()
@@ -122,51 +103,42 @@ class SingleWemosRegressionTests(unittest.TestCase):
     def test_device_crud_api_stays_passive_while_multi_mode_is_disabled(self):
         legacy_config = {"wemos_ip": "192.168.1.50", "wemos_port": 7777}
         self.config_path.write_text(json.dumps(legacy_config), encoding="utf-8")
-        server = self.backend.HTTPServer(("127.0.0.1", 0), self.backend.WebUIHandler)
-        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
-        server_thread.start()
-
         def request(path, method="GET", body=None):
-            data = json.dumps(body).encode("utf-8") if body is not None else None
-            http_request = urllib.request.Request(
-                f"http://127.0.0.1:{server.server_port}{path}",
-                data=data,
-                headers={"Content-Type": "application/json"},
-                method=method,
-            )
-            with urllib.request.urlopen(http_request, timeout=2) as response:
-                return json.loads(response.read().decode("utf-8"))
+            handler = object.__new__(self.backend.WebUIHandler)
+            data = json.dumps(body).encode('utf-8') if body is not None else b''
+            handler.path = path
+            handler.headers = {'Content-Length': str(len(data))}
+            handler.rfile = io.BytesIO(data)
+            handler._safe_send_json = mock.Mock()
+            handler.send_error = mock.Mock(side_effect=AssertionError('Unexpected HTTP error'))
+            getattr(handler, 'do_' + method)()
+            return handler._safe_send_json.call_args.args[0]
 
-        try:
-            listed = request("/api/devices")
-            self.assertFalse(listed["multi_device_enabled"])
-            self.assertEqual(listed["devices"][0]["id"], "legacy-primary")
+        listed = request("/api/devices")
+        self.assertFalse(listed["multi_device_enabled"])
+        self.assertEqual(listed["devices"][0]["id"], "legacy-primary")
 
-            created = request("/api/devices", "POST", {
-                "name": "İkinci Ekran",
-                "ip": "192.168.1.60",
-                "port": 7777,
-                "monitor_index": 2,
-                "leds": {"top": 10, "bottom": 10, "left": 5, "right": 5},
-            })["device"]
-            self.assertFalse(created["enabled"])
+        created = request("/api/devices", "POST", {
+            "name": "İkinci Ekran",
+            "ip": "192.168.1.60",
+            "port": 7777,
+            "monitor_index": 2,
+            "leds": {"top": 10, "bottom": 10, "left": 5, "right": 5},
+        })["device"]
+        self.assertFalse(created["enabled"])
 
-            updated = request(f"/api/devices/{created['id']}", "PUT", {
-                "name": "İkinci Ekran Güncel",
-                "leds": {"top": 12, "bottom": 10, "left": 5, "right": 5},
-            })
-            self.assertTrue(updated["success"])
-            self.assertEqual(updated["device"]["name"], "İkinci Ekran Güncel")
+        updated = request(f"/api/devices/{created['id']}", "PUT", {
+            "name": "İkinci Ekran Güncel",
+            "leds": {"top": 12, "bottom": 10, "left": 5, "right": 5},
+        })
+        self.assertTrue(updated["success"])
+        self.assertEqual(updated["device"]["name"], "İkinci Ekran Güncel")
 
-            deleted = request(f"/api/devices/{created['id']}", "DELETE")
-            self.assertTrue(deleted["success"])
-            saved_config = json.loads(self.config_path.read_text(encoding="utf-8"))
-            self.assertFalse(saved_config["multi_device_enabled"])
-            self.assertEqual(saved_config["wemos_ip"], "192.168.1.50")
-        finally:
-            server.shutdown()
-            server.server_close()
-            server_thread.join(timeout=2)
+        deleted = request(f"/api/devices/{created['id']}", "DELETE")
+        self.assertTrue(deleted["success"])
+        saved_config = json.loads(self.config_path.read_text(encoding="utf-8"))
+        self.assertFalse(saved_config["multi_device_enabled"])
+        self.assertEqual(saved_config["wemos_ip"], "192.168.1.50")
 
     def test_renderer_uses_backend_device_api_without_local_storage(self):
         renderer_source = Path("web_ui/index.html").read_text(encoding="utf-8")
@@ -200,7 +172,7 @@ class SingleWemosRegressionTests(unittest.TestCase):
             "monitor_index": 2,
             "leds": {"top": 1, "bottom": 0, "left": 1, "right": 0},
         }
-        with mock.patch.object(self.backend, "grab_edge_colors", return_value=[(1, 2, 3), (4, 5, 6)]) as grab:
+        with mock.patch.object(self.backend, "grab_edge_frame", return_value=bytes([1, 2, 3, 4, 5, 6])) as grab:
             frame = self.backend.build_device_frame(device, 20, 0, capture=object())
 
         self.assertEqual(frame, bytes([1, 2, 3, 4, 5, 6]))

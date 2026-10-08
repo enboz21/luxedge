@@ -9,8 +9,8 @@
     "main": "main.js",
     "scripts": {
         "start": "node launcher.js",
-        "pack": "electron-builder --dir",
-        "dist": "electron-builder"
+        "pack": "electron-builder --win --x64 --dir",
+        "dist": "electron-builder --win --x64"
     },
     "build": {
         "appId": "com.luxedge.app",
@@ -28,20 +28,8 @@
                 "to": "lush_backend.exe"
             },
             {
-                "from": "lush_backend",
-                "to": "lush_backend"
-            },
-            {
-                "from": "ambilight_pc.py",
-                "to": "ambilight_pc.py"
-            },
-            {
                 "from": "ambilight_config.json",
                 "to": "ambilight_config.json"
-            },
-            {
-                "from": "requirements.txt",
-                "to": "requirements.txt"
             }
         ],
         "nsis": {
@@ -58,15 +46,6 @@
         "win": {
             "target": "nsis",
             "signAndEditExecutable": false
-        },
-        "linux": {
-            "target": [
-                "AppImage",
-                "pacman",
-                "deb"
-            ],
-            "category": "Utility",
-            "icon": null
         }
     },
     "devDependencies": {

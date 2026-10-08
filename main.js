@@ -8,11 +8,12 @@ const { spawn } = require('child_process');
 const http = require('http');
 const path = require('path');
 const fs = require('fs');
-const os = require('os');
 
 let mainWindow;
 let pythonProcess;
 let tray = null;
+let shutdownPromise = null;
+const ownsInstance = app.requestSingleInstanceLock();
 const PYTHON_PORT = 8888;
 
 // ============================================================
@@ -97,60 +98,21 @@ function startPython() {
     return new Promise((resolve) => {
         console.log("[LuxEdge] Python backend başlatılıyor...");
 
-        // Önceki çalışan artık backend süreçlerini temizle (port çakışması önleme)
-        if (process.platform === 'win32') {
-            try {
-                const { execSync } = require('child_process');
-                execSync('taskkill /IM lush_backend.exe /F', { windowsHide: true, stdio: 'ignore' });
-            } catch (e) { /* zaten çalışmıyorsa hata yok */ }
-        }
-
         let executable, args, cwd;
 
         if (app.isPackaged) {
             // Paketlenmiş mod
-            const isWin = process.platform === 'win32';
-            const exeName = isWin ? 'lush_backend.exe' : 'lush_backend';
-            const exePath = path.join(process.resourcesPath, exeName);
-            const pyPath = path.join(process.resourcesPath, 'ambilight_pc.py');
-
-            console.log(`[LuxEdge] Resources path: ${process.resourcesPath}`);
-            console.log(`[LuxEdge] Backend exe: ${exePath} (var: ${fs.existsSync(exePath)})`);
-            console.log(`[LuxEdge] Backend py: ${pyPath} (var: ${fs.existsSync(pyPath)})`);
-
-            if (fs.existsSync(exePath)) {
-                // PyInstaller binary mevcut — onu kullan
-                executable = exePath;
-                args = ['--no-tray'];
-                cwd = process.resourcesPath;
-                console.log(`[LuxEdge] PyInstaller ${isWin ? 'exe' : 'binary'} kullanılıyor`);
-            } else if (fs.existsSync(pyPath)) {
-                // Binary yok ama py var — sistem Python'ı dene
-                executable = isWin ? 'python' : 'python3';
-                args = [pyPath, '--no-tray'];
-                cwd = process.resourcesPath;
-                console.log("[LuxEdge] Sistem Python kullanılıyor (fallback)");
-            } else {
-                console.error(`[LuxEdge] HATA: Ne ${exeName} ne ambilight_pc.py bulunamadı!`);
+            executable = path.join(process.resourcesPath, 'lush_backend.exe');
+            args = ['--no-tray'];
+            cwd = process.resourcesPath;
+            if (!fs.existsSync(executable)) {
+                console.error('[LuxEdge] Windows backend bulunamadı. Kurulumu onarın.');
                 resolve(false);
                 return;
             }
         } else {
-            // Geliştirme modu: python scripti kullan
-            const isWin = process.platform === 'win32';
-
-            // Eğer projede .venv varsa (geliştirici ortamı), onu kullan
-            const venvPathWin = path.join(__dirname, '.venv', 'Scripts', 'python.exe');
-            const venvPathLin = path.join(__dirname, '.venv', 'bin', 'python');
-
-            if (isWin && fs.existsSync(venvPathWin)) {
-                executable = venvPathWin;
-            } else if (!isWin && fs.existsSync(venvPathLin)) {
-                executable = venvPathLin;
-            } else {
-                executable = isWin ? 'python' : 'python3';
-            }
-
+            const venv = path.join(__dirname, '.venv', 'Scripts', 'python.exe');
+            executable = fs.existsSync(venv) ? venv : 'python';
             args = ['ambilight_pc.py', '--no-tray'];
             cwd = __dirname;
         }
@@ -162,7 +124,7 @@ function startPython() {
             cwd: cwd,
             env: { ...process.env, PYTHONUNBUFFERED: "1" },
             windowsHide: true,
-            detached: process.platform !== 'win32' // Linux'ta process group oluştur
+            detached: false
         });
 
         pythonProcess.stdout.on('data', (data) => {
@@ -175,7 +137,9 @@ function startPython() {
             if (msg) console.error(`[Python] ${msg}`);
         });
 
+        const startedProcess = pythonProcess;
         pythonProcess.on('close', (code) => {
+            if (pythonProcess === startedProcess) pythonProcess = null;
             console.log(`[LuxEdge] Python kapandı (kod: ${code})`);
         });
 
@@ -186,6 +150,7 @@ function startPython() {
         // Python sunucusunun hazır olmasını bekle
         let attempts = 0;
         const checkReady = () => {
+            if (app.isQuitting || pythonProcess !== startedProcess) { resolve(false); return; }
             attempts++;
             pythonGet('/api/status', 2000)
                 .then(() => {
@@ -202,22 +167,40 @@ function startPython() {
 }
 
 function killPython() {
-    if (pythonProcess) {
+    const child = pythonProcess;
+    pythonProcess = null;
+    if (!child || !child.pid || child.exitCode !== null) return Promise.resolve();
+    return new Promise(resolve => {
+        let finished = false;
+        let killer;
+        const finish = () => {
+            if (finished) return;
+            finished = true;
+            clearTimeout(timer);
+            resolve();
+        };
+        const timer = setTimeout(() => {
+            if (killer) killer.kill();
+            console.error('[LuxEdge] Backend kapatma zaman aşımı');
+            finish();
+        }, 5000);
         try {
-            if (process.platform === 'win32') {
-                const { spawnSync } = require('child_process');
-                spawnSync('taskkill', ['/pid', pythonProcess.pid.toString(), '/f', '/t'], { windowsHide: true });
-            } else {
-                // Linux: PyInstaller'ın bootloader'ı ile asıl scripti process group üzerinden tamamen kapat
-                try {
-                    process.kill(-pythonProcess.pid, 'SIGKILL');
-                } catch (e) {
-                    pythonProcess.kill('SIGKILL');
-                }
-            }
-        } catch (e) { console.error('[LuxEdge] Python kapatma hatası:', e); }
-        pythonProcess = null;
-    }
+            killer = spawn('taskkill', ['/pid', String(child.pid), '/f', '/t'], { windowsHide: true, stdio: 'ignore' });
+            killer.once('close', finish);
+            killer.once('error', finish);
+        } catch (error) { finish(); }
+    });
+}
+
+function requestQuit(relaunch = false) {
+    if (shutdownPromise) return shutdownPromise;
+    app.isQuitting = true;
+    shutdownPromise = killPython().then(() => {
+        if (tray) { tray.destroy(); tray = null; }
+        if (relaunch) app.relaunch();
+        app.exit(0);
+    });
+    return shutdownPromise;
 }
 
 // ============================================================
@@ -243,6 +226,11 @@ function createWindow() {
         }
     });
 
+    for (const event of ['show', 'hide', 'minimize', 'restore']) {
+        mainWindow.on(event, () => {
+            mainWindow.webContents.send('window-visibility', mainWindow.isVisible() && !mainWindow.isMinimized());
+        });
+    }
     mainWindow.loadFile(path.join(__dirname, 'web_ui', 'index.html'));
 
     mainWindow.once('ready-to-show', () => mainWindow.show());
@@ -295,11 +283,11 @@ function createTray() {
         { type: 'separator' },
         {
             label: '🔄 Yeniden Başlat',
-            click: () => { app.isQuitting = true; killPython(); app.relaunch(); app.exit(); }
+            click: () => { requestQuit(true); }
         },
         {
             label: '❌ Çıkış',
-            click: () => { app.isQuitting = true; killPython(); app.quit(); }
+            click: () => { requestQuit(); }
         }
     ]);
 
@@ -335,6 +323,10 @@ function hslToRgb(h, s, l) {
 // ============================================================
 
 function registerIpcHandlers() {
+    ipcMain.handle('refresh-monitors', async () => {
+        try { return await pythonPost('/api/monitors/refresh', {}, 5000); }
+        catch (error) { return { success: false, message: 'Monitör listesi güncellenemedi.' }; }
+    });
     ipcMain.handle('get-status', async () => {
         try { return await pythonGet('/api/status', 2000); }
         catch (e) { return { connection: 'bağlantı yok', running: false, last_error: "Python sunucusuna erişilemiyor..." }; }
@@ -396,7 +388,7 @@ function registerIpcHandlers() {
     });
 
     ipcMain.handle('restart-app', async () => {
-        setTimeout(() => { app.isQuitting = true; killPython(); app.relaunch(); app.exit(); }, 1000);
+        setTimeout(() => { requestQuit(true); }, 1000);
         return { success: true, message: "Yeniden başlatılıyor..." };
     });
 
@@ -416,60 +408,12 @@ function registerIpcHandlers() {
     });
 
     // Otomatik Başlatma (Sadece Electron — backend'i Electron başlatır)
-    function getLinuxAutostartPath() {
-        const configDir = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
-        return path.join(configDir, 'autostart', 'luxedge.desktop');
-    }
-
-    ipcMain.handle('get-autostart', () => {
-        if (process.platform === 'win32') {
-            return { enabled: app.getLoginItemSettings().openAtLogin };
-        } else {
-            // Linux: Manuel desktop file kontrolü
-            const desktopPath = getLinuxAutostartPath();
-            return { enabled: fs.existsSync(desktopPath) };
-        }
-    });
-
+    ipcMain.handle('get-autostart', () => ({ enabled: app.getLoginItemSettings().openAtLogin }));
     ipcMain.handle('set-autostart', (event, enabled) => {
         try {
-            if (process.platform === 'win32') {
-                app.setLoginItemSettings({
-                    openAtLogin: enabled,
-                    path: app.getPath('exe'),
-                    args: []
-                });
-            } else {
-                // Linux: Manuel XDG Autostart File
-                const desktopPath = getLinuxAutostartPath();
-                if (enabled) {
-                    const autostartDir = path.dirname(desktopPath);
-                    if (!fs.existsSync(autostartDir)) fs.mkdirSync(autostartDir, { recursive: true });
-
-                    // AppImage kullanılıyorsa onun yolunu al, yoksa exe
-                    const exePath = process.env.APPIMAGE || app.getPath('exe');
-
-                    const desktopContent = `[Desktop Entry]
-Type=Application
-Name=LuxEdge
-Exec="${exePath}"
-Hidden=false
-NoDisplay=false
-X-GNOME-Autostart-enabled=true
-Comment=LuxEdge Ambilight System
-Terminal=false
-`;
-                    fs.writeFileSync(desktopPath, desktopContent);
-                } else {
-                    if (fs.existsSync(desktopPath)) fs.unlinkSync(desktopPath);
-                }
-            }
-            console.log(`[LuxEdge] Otomatik başlatma: ${enabled ? 'AÇIK' : 'KAPALI'}`);
-            return { success: true, enabled: enabled };
-        } catch (e) {
-            console.error('[LuxEdge] Otomatik başlatma ayarlanamadı:', e);
-            return { success: false, message: e.message };
-        }
+            app.setLoginItemSettings({ openAtLogin: enabled, path: app.getPath('exe'), args: [] });
+            return { success: true, enabled };
+        } catch (error) { return { success: false, message: error.message }; }
     });
 
     // Pencere Kontrolleri
@@ -485,6 +429,16 @@ Terminal=false
 // UYGULAMA YAŞAM DÖNGÜSÜ
 // ============================================================
 
+if (!ownsInstance) {
+    app.quit();
+} else {
+app.on('second-instance', () => {
+    if (mainWindow) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.show();
+        mainWindow.focus();
+    }
+});
 app.whenReady().then(async () => {
     console.log('[LuxEdge] Başlatılıyor...');
 
@@ -494,6 +448,7 @@ app.whenReady().then(async () => {
 
     registerIpcHandlers();
     await startPython();
+    if (app.isQuitting) return;
     createWindow();
     createTray();
 
@@ -504,8 +459,9 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => { /* Tepside çalışmaya devam et */ });
-app.on('before-quit', () => { app.isQuitting = true; });
-app.on('will-quit', () => { killPython(); if (tray) { tray.destroy(); tray = null; } });
-
-process.on('exit', killPython);
-process.on('uncaughtException', (err) => { console.error('[LuxEdge] Hata:', err); killPython(); app.exit(1); });
+app.on('before-quit', event => {
+    event.preventDefault();
+    requestQuit();
+});
+process.on('uncaughtException', err => { console.error('[LuxEdge] Hata:', err); requestQuit(); });
+}

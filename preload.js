@@ -8,6 +8,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('luxedge', {
     // Durum
     getStatus: () => ipcRenderer.invoke('get-status'),
+    refreshMonitors: () => ipcRenderer.invoke('refresh-monitors'),
 
     // Ağ
     scanNetwork: () => ipcRenderer.invoke('scan-network'),
@@ -37,6 +38,12 @@ contextBridge.exposeInMainWorld('luxedge', {
     // Otomatik Başlatma
     getAutoStart: () => ipcRenderer.invoke('get-autostart'),
     setAutoStart: (enabled) => ipcRenderer.invoke('set-autostart', enabled),
+
+    onWindowVisibility: callback => {
+        const listener = (_event, visible) => callback(visible);
+        ipcRenderer.on('window-visibility', listener);
+        return () => ipcRenderer.removeListener('window-visibility', listener);
+    },
 
     // Pencere Kontrolleri
     minimizeWindow: () => ipcRenderer.invoke('window-minimize'),

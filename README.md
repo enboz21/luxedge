@@ -29,7 +29,7 @@
   (Kontrol Paneli)
 ```
 
-1. **Python backend** ekranın kenarlarındaki renkleri yakalar (`mss` + `PIL`)
+1. **Python backend** monitör görüntüsünü `mss` ile yakalar; kenar renklerini `NumPy` ile hesaplar
 2. Renk verileri **UDP paketleri** olarak Wemos'a gönderilir
 3. **Wemos** gelen verilere göre **NeoPixel LED'leri** kontrol eder
 4. **Electron arayüzü** sistemi yönetmenizi sağlar
@@ -40,8 +40,9 @@
 
 | Özellik | Açıklama |
 |---|---|
-| 🖥️ **Gerçek Zamanlı Ekran Yakalama** | Ekranın 4 kenarındaki renkleri ~60 FPS hızda analiz eder |
+| 🖥️ **Gerçek Zamanlı Ekran Yakalama** | Ekran kenarlarını ayarlanabilir kare hızında analiz eder; varsayılan hedef 60 FPS'tir |
 | 🖥️ **Çoklu Monitör & Ekran Seçimi** | Çift/üçlü monitörlü sistemlerde LED'lerin takip edeceği ekranı arayüzden seçme imkanı |
+| 🔄 **Elle Monitör Yenileme** | Liste açılışta yüklenir; sonraki taramalar yalnız monitör seçicisinin yanındaki Güncelle düğmesiyle yapılır |
 | 📡 **Otomatik Ağ Taraması** | Wemos cihazını ağda otomatik bulur (UDP Discovery) |
 | 🔌 **UDP PING/PONG Bağlantı Kontrolü** | Wemos'a gerçek zamanlı bağlantı durumu takibi |
 | 💡 **Esnek LED Konfigürasyonu** | Üst, alt, sol, sağ kenar LED sayılarını ayrı ayrı ayarlama |
@@ -53,13 +54,14 @@
 | 🔧 **Manuel IP Girişi** | Otomatik tarama çalışmazsa IP'yi elle girme |
 | 💾 **Config Otomatik Kayıt** | Ayarlar JSON dosyasında saklanır |
 | 🖱️ **Sistem Tepsisi** | Arka planda çalışır, tepsiden erişilir |
+| ⚙️ **Windows Optimizasyonları** | Paylaşılan kare yakalama, toplu RGB paketleme, tek uygulama kilidi ve gizli arayüzde durdurulan sorgular |
 
 ### Çoklu Wemos geçişi (güvenli mod)
 
 - Mevcut tek-Wemos ayarı korunur; çoklu mod kapalıyken uygulama eski `wemos_ip` UDP yolunu kullanır.
 - Yeni cihazlar önce pasif kaydedilir. Her cihaz bir monitöre ve kendi dört kenar LED toplamına atanır.
 - Çoklu mod yalnız etkin cihazların Wemos `/status` içindeki `led_count` değeri uygulamadaki LED toplamıyla eşleştiğinde açılabilir.
-- Çoklu mod kapatıldığında uygulama hemen tekli güvenli moda döner. Cihazın bağlantı veya LED toplamı sorunu diğer doğrulanmış cihazların akışını durdurmaz.
+- Çoklu mod kapatıldığında worker'ın sonraki ayar kontrolünde tekli moda dönülür. LED toplamı doğrulanmayan cihazlar gönderim listesinden çıkarılır; mevcut ağ doğrulaması worker içinde beklemeye neden olabilir.
 - Wemos pin/şerit ayarı firmware'in kendi kurulum sayfasında kalır; PC uygulaması yalnız toplam LED sayısını doğrular.
 
 ---
@@ -89,32 +91,41 @@
 
 ## 💻 Yazılım Gereksinimleri
 
-- **İşletim Sistemi:** Windows 10/11
-- **Node.js:** v18 veya üstü
-- **Python:** 3.10 veya üstü
-- **Python Kütüphaneleri:** `numpy`, `mss`, `Pillow`, `pystray`
+- **Hazır kurulum paketi:** Windows 10/11 x64. Python backend ve Electron pakete dahildir; ayrıca Python veya Node.js kurmanız gerekmez.
+- **Kaynak koddan çalıştırma:** Node.js 18+ ve Python 3.10+; Python bağımlılıkları `requirements.txt` içindedir.
+- **Paket üretme:** Bunlara ek olarak PyInstaller gerekir.
+
+Linux desteği, derleme betiği ve paket hedefleri kaldırılmıştır. Mevcut hedef yalnız Windows x64'tür.
 
 ---
 
 ## 🚀 Kurulum
 
+Hazır paket için `LuxEdge Setup 1.6.4.exe` dosyasını kullanın. Aşağıdaki adımlar geliştiriciler içindir.
+
 ### 1. Projeyi İndirin
-```bash
-git clone https://github.com/KULLANICI_ADINIZ/luxedge.git
+```powershell
+git clone https://github.com/enboz21/luxedge.git
 cd luxedge
 ```
 
 ### 2. Node.js Bağımlılıklarını Kurun
-```bash
-npm install
+```powershell
+npm ci
 ```
 
 ### 3. Python Bağımlılıklarını Kurun
-```bash
-pip install -r requirements.txt
+Proje klasöründe bir sanal ortam oluşturun; Electron geliştirme modunda bu ortamı kullanır:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
 ### 4. Wemos'u Programlayın
+
+Bu adım yeni donanım kurulumu içindir. Bu Windows optimizasyonları firmware'i değiştirmediğinden çalışan Wemos'u yeniden programlamanız gerekmez.
+
 1. Arduino IDE'yi açın
 2. `wemos_code/wemos_code.ino` dosyasını yükleyin
 3. ESP8266 kart desteğini ekleyin (Araçlar → Kart → ESP8266)
@@ -134,25 +145,31 @@ npm start
 
 ## 🔨 Derleme & Paketleme (Build)
 
-Uygulamanın çalıştırılabilir ve dağıtılabilir halini (kurulum dosyası) oluşturmak için aşağıdaki adımları takip edin:
+Kaynak kurulum adımlarından sonra proje kökünde çalıştırın:
 
-### 🪟 Windows İçin Derleme
-
-**1. Python Backend'i EXE'ye Çevirin:**
-Windows'ta Python kısmını bağımsız bir `lush_backend.exe` olarak derlemeniz gerekir:
-```bash
-pip install pyinstaller
-python -m PyInstaller --onefile --noconsole --name lush_backend ambilight_pc.py
-copy dist\lush_backend.exe lush_backend.exe
+```powershell
+.\.venv\Scripts\python.exe -m pip install pyinstaller
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Python .\.venv\Scripts\python.exe
 ```
 
-**2. Electron Installer Oluşturun:**
-```bash
-npm run dist
-```
-Bu işlem sonunda `dist/` klasörü içinde arkadaşınıza doğrudan gönderebileceğiniz **`LuxEdge Setup X.X.X.exe`** NSIS Kurulum dosyası oluşacaktır.
+Betik önce backend'i `dist/backend/lush_backend.exe` olarak derler, proje kökündeki
+`lush_backend.exe` dosyasını günceller ve Windows x64 NSIS paketini üretir.
+Electron için `node_modules/electron/dist` kullanılır; derleme önbellekleri `build/`
+altında tutulur. Gerekli NSIS araçları önbellekte yoksa ilk derlemede indirilir.
+Paketlenen backend'in SHA256 özeti kaynak binary ile karşılaştırılır.
 
-> ⚠️ **Not:** Windows'ta code signing hatası alırsanız, `package.json`'da `"signAndEditExecutable": false` ayarının yapılı olduğundan emin olun.
+Çıktı: **`dist/LuxEdge Setup 1.6.4.exe`**. Bu işlem kurulum veya canlı uygulama testi yapmaz.
+`npm run dist` yalnız Electron paketini üretir; Python kaynakları değiştiğinde güncel
+backend'in pakete girmesi için yukarıdaki tam derleme betiğini kullanın.
+
+Paket dosyalarını uygulamayı başlatmadan kontrol etmek için:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/verify-package.py
+node scripts/verify-asar.js
+```
+
+Python bytecode karşılaştırması için backend'i derlerken kullandığınız Python ortamını kullanın.
 
 ---
 
@@ -172,6 +189,7 @@ Bu işlem sonunda `dist/` klasörü içinde arkadaşınıza doğrudan gönderebi
 
 | Buton | İşlev |
 |---|---|
+| **Güncelle** (monitör seçicisi yanında) | Monitör listesini yeniden tarar; iki monitör seçicisini birlikte yeniler |
 | 🔍 **Tara** | Ağda Wemos cihazını arar ve bulursa IP'sini kaydeder |
 | 🔄 **Yeniden Başlat** | Wemos'u uzaktan resetler |
 | 🌙 **Uyku Modu** | LED'leri kapatır/açar (Wemos bağlı kalır) |
@@ -187,6 +205,18 @@ Bu işlem sonunda `dist/` klasörü içinde arkadaşınıza doğrudan gönderebi
 | 💾 **Ayarları Kaydet** | LED konfigürasyonunu (kenar LED sayıları) kaydeder |
 | 🔄 **Yeniden Başlat** | Uygulamanın tamamını yeniden başlatır |
 
+### Monitör listesini yenileme
+
+Liste uygulama açılışında yüklenir; durum sorguları veya pencereyi yeniden göstermek
+yeni tarama başlatmaz. Ekran eklediğinizde, çıkardığınızda ya da ekran düzenini
+değiştirdiğinizde **Güncelle** düğmesine basın. Yenileme sırasında düğmeler geçici
+olarak pasif olur. Başarısız yenilemede önceki liste korunur; işlem cihaz veya LED
+ayarlarını otomatik kaydetmez.
+
+Kullanıcı ayarları `%APPDATA%\LuxEdge\ambilight_config.json` içinde saklanır.
+Projedeki JSON dosyası başlangıç ayarları içindir. Worker ayarları bellekte kullanır
+ve dosya değişikliklerini 3 saniyelik kontrol aralığında alır.
+
 ---
 
 ## 🏗️ Proje Yapısı
@@ -197,13 +227,20 @@ luxedge/
 ├── preload.js           # Güvenli IPC köprüsü (contextIsolation)
 ├── launcher.js          # Electron başlatıcı
 ├── ambilight_pc.py      # Python backend kaynak kodu
+├── frame_processing.py  # Kenar renkleri, önbellek ve toplu RGB paketleme
+├── monitor_catalog.py   # Açılışta ve elle yenilenen monitör listesi
 ├── lush_backend.exe     # Python backend (PyInstaller ile derlenmiş)
 ├── package.json         # Node.js bağımlılıkları ve build ayarları
 ├── package-lock.json    # Bağımlılık versiyon kilitleme
 ├── requirements.txt     # Python bağımlılıkları
-├── ambilight_config.json # Kullanıcı ayarları (otomatik oluşturulur)
+├── ambilight_config.json # Başlangıç ayarları; aktif ayarlar APPDATA altında
 ├── web_ui/
-│   └── index.html       # Kontrol paneli arayüzü (tek dosya SPA)
+│   ├── index.html       # Kontrol paneli arayüzü
+│   ├── polling.js       # Görünürlük ve çakışmayan sorgu yönetimi
+│   └── monitors.js      # Monitör seçenekleri ve Güncelle düğmesi
+├── scripts/             # Windows derleme ve paket doğrulama araçları
+├── tests/               # Yapay görüntü, taklit ağ ve süreç testleri
+├── docs/                # Optimizasyon raporu ve kenar yakalama araştırması
 ├── wemos_code/
 │   └── wemos_code.ino   # Wemos (ESP8266) Arduino kodu
 ├── LICENSE              # CC BY-NC 4.0 Lisans
@@ -242,9 +279,16 @@ luxedge/
 
 | Endpoint | Method | Açıklama |
 |---|---|---|
-| `/api/status` | GET | Sistem durumu (FPS, bağlantı, LED bilgileri) |
+| `/api/status` | GET | Sistem durumu ve önbellekteki monitör listesi; yeniden tarama yapmaz |
+| `/api/monitors/refresh` | POST | Monitör listesini elle yeniler; `success`, `monitors`, `monitor_list_version` döndürür |
 | `/api/scan` | GET | Ağda Wemos taraması başlatır |
 | `/api/config` | POST | Konfigürasyon günceller |
+| `/api/logs` | GET | Son log kayıtlarını döndürür |
+| `/api/devices` | GET / POST | Cihazları listeler / yeni pasif cihaz kaydeder |
+| `/api/devices/{id}` | PUT / DELETE | Cihazı günceller / siler |
+| `/api/devices/mode` | POST | Çoklu cihaz modunu değiştirir |
+| `/api/devices/scan` | GET | Ağdaki Wemos cihazlarını arar |
+| `/api/devices/validation` | GET | Cihazların firmware LED toplamlarını doğrular |
 | `/api/wemos/restart` | POST | Wemos'u yeniden başlatır |
 | `/api/wemos/sleep` | POST | Wemos uyku modunu değiştirir |
 | `/api/wemos/reset_wifi` | POST | Wemos Wi-Fi ayarlarını sıfırlar |
@@ -252,6 +296,18 @@ luxedge/
 ---
 
 ## 📝 Sürüm Geçmişi
+
+### Geliştirme değişiklikleri — Windows optimizasyonu (8 Ekim 2026)
+
+Paket sürümü `1.6.4` olarak korunmuştur; aşağıdaki değişiklikler yeni bir sürümün yayımlandığı anlamına gelmez.
+
+- **Monitör listesi:** Açılışta yükleme, elle Güncelle düğmesi ve durum sorgularında önbellek kullanımı.
+- **Görüntü işleme:** Kare başına ayar okuması ve gereksiz gölge yakalamalar kaldırıldı; aynı monitörün görüntüsü kare içinde paylaşılıyor.
+- **RGB paketleme:** NumPy dizisinden toplu byte üretimi; LED sırası, paket biçimi ve parlaklıkta kesme davranışı korundu.
+- **Zamanlama:** 60 FPS hedefi korundu; monoton saat ve worker sonunda serbest bırakılan zamanlayıcı kaynağı kullanılıyor.
+- **Arayüz ve süreçler:** Tek uygulama kilidi, yalnız uygulamanın kendi backend'ini hedefleyen asenkron kapatma ve gizli pencerede durdurulan durum/log sorguları.
+- **Platform:** Linux kodu, binary'si ve paket hedefleri kaldırıldı. Windows paketinde sistem Python fallback'i bulunmuyor.
+- **Uyumluluk:** Mevcut Wemos bağlantı/tarama davranışı, firmware ve kullanıcı ayarları korundu.
 
 ### v1.6.4 (Güncel)
 - 🛟 **Kademeli Wemos Kurtarma:** LED veri akışı kesildiğinde UDP soketi, Wi-Fi bağlantısı ve son çare olarak Wemos yeniden başlatması kontrollü aşamalarla uygulanır; yeniden başlatma döngüsü oluşmaz.
@@ -264,7 +320,7 @@ luxedge/
 - 📡 **Hotspot Modu UDP İyileştirmesi:** Wemos Hotspot (`Wemos_Setup`) modundayken de UDP dinleyicisi başlatılarak ilk kurulumda otomatik cihaz bulma (Discovery) yanıtlarının her iki modda da kusursuz çalışması sağlandı.
 - ⚡ **60 FPS UART Bloklaması Kaldırıldı:** Her LED paketi alındığında çağrılan `Serial.println("LED verisi alındı")` kaldırıldı. Saniyede 60 seri port yazımının Wi-Fi stack'ini dondurması ve bağlantı koparması önlendi.
 - 🛡️ **Akıllı Bağlantı Kontrolü & Boş IP Koruması:** Ekrandan gerçek veri akışı varken (FPS > 1) Wemos'a her 3 saniyede gereksiz UDP PING ve HTTP GET istekleri atılması engellendi. Arayüzde ayar değişikliği sırasında boş IP gönderilerek kayıtlı Wemos IP'sinin silinmesi önlendi.
-- 🚀 **Port & Süreç Yönetimi:** Uygulama açılırken önceki oturumlardan kalan artık `lush_backend.exe` süreçleri otomatik temizlenir; port 8888 çakışmaları ve `'NoneType' object has no attribute 'monitors'` başlatma hatası tamamen çözüldü.
+- 🚀 **Port & Süreç Yönetimi (önceki davranış):** Açılışta ada göre backend temizliği kullanılıyordu. Güncel geliştirme değişiklikleri bu yöntemi tek uygulama kilidi ve sahip olunan süreç ağacının kapatılmasıyla değiştirdi.
 
 ### v1.6.2
 - 🎚️ **Hedef FPS Ayarı:** Web arayüzüne canlı "Hedef FPS" slider'ı eklendi (10-60 FPS). Artık Wemos'un Wi-Fi yükünü azaltmak ve bağlantıyı rahatlatmak için kare hızını düşürebilirsiniz.
@@ -298,18 +354,12 @@ luxedge/
 ### v1.5.3
 - 🐛 **Çoklu Monitör Fullscreen Algılama Düzeltmesi (Windows):** LED monitöründe tam ekran bir uygulama (oyun, YouTube vb.) açıkken ikinci ekrana tıklanması durumunda LED'lerin sabit idle rengine geçmesi sorunu giderildi. Artık focus hangi ekranda olursa olsun, LED monitöründe tam ekran pencere varsa ekran renkleri takip edilmeye devam eder.
 - 🔧 **DWM Cloaked Filtresi:** Windows'un arka planda tuttuğu görünmez sistem pencerelerinin (ör: "Windows Giriş Deneyimi") yanlışlıkla tam ekran olarak algılanması engellendi.
-- ⚠️ **Not:** Linux tarafı için de aynı düzeltme uygulandı (`_NET_CLIENT_LIST` ile tüm pencere taraması) ancak henüz test edilmedi.
 
 ### v1.5.2
 - ✨ **Arayüz ve Wemos Senkronizasyon İyileştirmeleri:** Sadece belirli LED'leri kapattığınızda yaşanan hayalet LED sorunu giderildi; toplam LED sayısı değiştiğinde otomatik "Blackout (karartma)" paketi gönderilerek eski renklerin cihazda asılı kalması engellendi.
 
 ### v1.5.1
-- ✨ **Linux Platform Desteği:** Sistem tamamen Linux uyumlu hale getirildi! Windows'a özel olan `ipconfig / netsh` gibi arka plan komutları Arch ve Ubuntu/Debian için `ip addr / nmcli` desteklerine kavuştu.
-- ✨ **Çoklu Monitör Fullscreen Desteği:** X11 (`ctypes`) protokolü entegre edilerek oyun/video hangi monitördeyse doğru bir şekilde tespit edilmeye başlandı. (Böylelikle yan ekranda YouTube izlerken ana ekranda oyun oynadığınızda sistem şaşırmaz).
 - ✨ **UDP Unicast Taraması:** Güvenlik duvarı/modem yüzünden Cihaz Bulma'yı engelleyen Broadcast kısıtlamalarına karşı yedek olarak *Unicast subnet sweep* eklendi.
-- ✨ **Linux Paketlemeleri & Betikler:** Arch Linux için `.pacman` ve evrensel kullanım için `.AppImage` build mimarisi `.venv` senkronizasyonuna eklendi (`build-linux.sh`).
-- ✨ **Otomatik Başlat Yönetimi:** Arayüz üzerinden Windows ve Linux Startup'u (Otomatik Başlangıç) yönetimi direkt IPC mekanizmalarına devredildi (Electron UI Toggle eklendi).
-- ✨ GNOME ve KDE ortamlarından "Accent Color" Windows uyumluluğuna dâhil edildi.
 
 ### v1.4.2
 - ✅ **Bekleme (Idle) Modu:** Monitörde oyun/video gibi gerçek bir tam ekran uygulama çalışmadığında LED'lerin sabit bir renkte (kullanıcının seçtiği) yanmasını sağlayan özellik eklendi.
@@ -351,9 +401,34 @@ luxedge/
 |---|---|
 | Wemos bulunamıyor | Aynı Wi-Fi ağında olduğundan emin olun, Manuel IP deneyin |
 | LED'ler yanmıyor | Güç kaynağını kontrol edin, LED_COUNT değerini doğrulayın |
-| Düşük FPS | v1.6.1'de ~3-4× optimize edildi; hâlâ düşükse ekran çözünürlüğünü veya EDGE_WIDTH değerini azaltın |
+| Düşük FPS / Windows takılması | Hedef ve gerçekleşen FPS'yi, logları ve sistem yükünü karşılaştırın; son optimizasyonların canlı performans sonucu henüz ölçülmedi |
+| Monitör listesi eski | Monitör seçicisinin yanındaki Güncelle düğmesine basın |
 | Bağlantı kopuyor | Wemos'u yeniden başlatın, Wi-Fi sinyal gücünü kontrol edin |
-| Python başlamıyor | `pip install -r requirements.txt` ile kütüphaneleri kurun |
+| Python başlamıyor (kaynak kod) | `.venv` ortamını ve bu ortamdaki `requirements.txt` bağımlılıklarını kontrol edin |
+| Backend bulunamıyor (hazır paket) | Windows paketini yeniden kurun; paketlenmiş uygulama sistem Python'ına geçmez |
+
+---
+
+## 🧪 Program İçi Testler ve Doğrulama
+
+Kaynak kurulum adımlarından sonra:
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+node --test tests/electron.test.js tests/monitors.test.js
+```
+
+8 Ekim 2026 doğrulamasında **31 Python + 13 JavaScript testi (44 toplam)** geçti.
+Testler yapay ekran görüntüleri, taklit ağ/süreç nesneleri ve geçici ayarlar kullanır;
+gerçek Wemos'a bağlanmaz, ekran yakalamaz veya kurulum çalıştırmaz.
+Renk ve LED sırası, tüm 0–255 parlaklık değerleri, monitör yenileme, gizli arayüz,
+süreç yönetimi ve paket içeriği kontrol edilmiştir.
+
+**Gerçek cihaz, ekran, oyun, canlı performans ve kurulum testleri henüz yapılmadı.**
+Windows takılmalarının giderildiği veya gerçek CPU/GPU yükünün azaldığı doğrulanmış değildir.
+
+- [Windows optimizasyonu ve doğrulama raporu](docs/WINDOWS_OPTIMIZATION.md)
+- [Yalnız kenar yakalama araştırması](docs/EDGE_CAPTURE_RESEARCH.md): 18 yapay görüntü senaryosunda renk eşitliği doğrulandı; mevcut uygulama hâlâ tam monitör görüntüsü yakalar. Kenar yakalama üretimde etkin değildir.
 
 ---
 

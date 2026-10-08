@@ -874,9 +874,10 @@
                             <div style="grid-column: 1 / -1;">
                                 <label style="font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; display: block;"
                                     title="LED şeridinin arkasına takılı olduğu ekranı seçin. Ambilight yalnızca bu ekranın kenarlarını tarar.">🖥️ Hedef Monitör / Ekran Seçimi</label>
-                                <select id="led_monitor_index" class="input-control" style="cursor: pointer; margin-bottom: 0;">
+                                <div style="display:flex; gap:8px; align-items:center;"><select id="led_monitor_index" class="input-control" style="cursor: pointer; margin-bottom: 0; min-width:0; flex:1;">
                                     <option value="1">Monitör 1 (Yükleniyor...)</option>
                                 </select>
+<button type="button" class="btn btn-secondary monitor-refresh" onclick="refreshMonitors()" title="Monitör listesini yeniden tara">Güncelle</button></div>
                             </div>
                             <div>
                                 <label style="font-size: 12px; color: var(--text-secondary);">Üst Kenar</label>
@@ -1041,7 +1042,8 @@
                             <input type="text" id="device-name" class="input-control" placeholder="Cihaz adı">
                             <input type="text" id="device-ip" class="input-control" placeholder="IP adresi">
                             <input type="number" id="device-port" class="input-control" value="7777" min="1" max="65535" placeholder="Port">
-                            <select id="device-monitor-index" class="input-control"><option value="1">Monitör 1</option></select>
+                            <div style="display:flex; gap:8px; align-items:center;"><select id="device-monitor-index" class="input-control" style="min-width:0; flex:1; margin-bottom:0;"><option value="1">Monitör 1</option></select>
+<button type="button" class="btn btn-secondary monitor-refresh" onclick="refreshMonitors()" title="Monitör listesini yeniden tara">Güncelle</button></div>
                             <input type="number" id="device-top-leds" class="input-control" value="0" min="0" placeholder="Üst LED">
                             <input type="number" id="device-bottom-leds" class="input-control" value="0" min="0" placeholder="Alt LED">
                             <input type="number" id="device-left-leds" class="input-control" value="0" min="0" placeholder="Sol LED">
@@ -1129,7 +1131,13 @@
 
     <div id="toast-container"></div>
 
+    <script src="polling.js"></script>
+    <script src="monitors.js"></script>
     <script>
+        let electronVisible = true;
+        const poller = createPoller(() => !document.hidden && electronVisible);
+        const fetchStatus = poller.add('status', fetchStatusData, 1500);
+        const fetchLogs = poller.add('logs', fetchLogsData, 2000);
         // IPC API Erişimi
         const api = window.luxedge;
 
@@ -1358,19 +1366,25 @@
             });
         }
 
-        function renderDeviceMonitorOptions() {
-            const select = document.getElementById('device-monitor-index');
-            if (!select || !availableMonitors.length) return;
-            const currentValue = select.value || '1';
-            select.replaceChildren();
-            availableMonitors.forEach(monitor => {
-                const option = document.createElement('option');
-                option.value = monitor.index;
-                option.textContent = monitor.name || `Monitör ${monitor.index}`;
-                select.appendChild(option);
-            });
-            select.value = currentValue;
+        let monitorListVersion = -1;
+        function applyMonitorSnapshot(status) {
+            if (!Array.isArray(status.monitors) || status.monitor_list_version <= monitorListVersion) return;
+            monitorListVersion = status.monitor_list_version;
+            availableMonitors = status.monitors;
+            const selected = els.ledMonitorIndex._loaded
+                ? els.ledMonitorIndex.value : (status.led_monitor_index || 1);
+            renderMonitorOptions(els.ledMonitorIndex, availableMonitors, selected, document);
+            els.ledMonitorIndex._loaded = true;
+            const deviceSelect = document.getElementById('device-monitor-index');
+            renderMonitorOptions(deviceSelect, availableMonitors, deviceSelect.value, document);
         }
+
+        const refreshMonitors = createMonitorRefresh(api, applyMonitorSnapshot, busy => {
+            document.querySelectorAll('.monitor-refresh').forEach(button => {
+                button.disabled = busy;
+                button.textContent = busy ? 'Güncelleniyor…' : 'Güncelle';
+            });
+        }, showToast);
 
         async function fetchDevices() {
             try {
@@ -1492,7 +1506,7 @@
             }
         }
 
-        async function fetchStatus() {
+        async function fetchStatusData() {
             try {
                 const status = await api.getStatus();
                 updateUI(status);
@@ -1572,10 +1586,7 @@
         }
 
         function updateUI(status) {
-            if (Array.isArray(status.monitors)) {
-                availableMonitors = status.monitors;
-                renderDeviceMonitorOptions();
-            }
+            applyMonitorSnapshot(status);
 
             // Bağlantı Durumu — FPS > 0 ise paketler gönderiliyor = bağlı
             const isSendingData = status.actual_fps && status.actual_fps > 0;
@@ -1626,20 +1637,8 @@
                 if (status.edge_width !== undefined && document.activeElement !== els.edgeWidth) els.edgeWidth.value = status.edge_width;
                 if (status.edge_offset !== undefined && document.activeElement !== els.edgeOffset) els.edgeOffset.value = status.edge_offset;
 
-                // Monitör listesi güncelleme
-                if (status.monitors && els.ledMonitorIndex && (!els.ledMonitorIndex._loaded || els.ledMonitorIndex.options.length !== status.monitors.length)) {
-                    const currentVal = els.ledMonitorIndex.value || status.led_monitor_index || 1;
-                    els.ledMonitorIndex.innerHTML = '';
-                    status.monitors.forEach(m => {
-                        const opt = document.createElement('option');
-                        opt.value = m.index;
-                        const primaryTag = m.is_primary ? ' [Birincil Ekran]' : '';
-                        opt.textContent = `Monitör ${m.index}: ${m.name} (${m.width}x${m.height})${primaryTag}`;
-                        els.ledMonitorIndex.appendChild(opt);
-                    });
-                    els.ledMonitorIndex.value = currentVal;
-                    els.ledMonitorIndex._loaded = true;
-                } else if (status.led_monitor_index !== undefined && els.ledMonitorIndex && document.activeElement !== els.ledMonitorIndex && !isEditingMode) {
+                if (status.led_monitor_index !== undefined && els.ledMonitorIndex && document.activeElement !== els.ledMonitorIndex && !isEditingMode
+                    && Array.from(els.ledMonitorIndex.options).some(option => option.value === String(status.led_monitor_index))) {
                     els.ledMonitorIndex.value = status.led_monitor_index;
                 }
             }
@@ -1941,7 +1940,7 @@
         let _logCache = [];
         let _logPanelOpen = false;
 
-        async function fetchLogs() {
+        async function fetchLogsData() {
             if (!_logPanelOpen) return;
             try {
                 const data = await api.getLogs();
@@ -1996,8 +1995,14 @@
         }
 
         // --- Loop ---
-        setInterval(fetchStatus, 1500);
-        setInterval(fetchLogs, 2000);  // Log paneli açıkken 2 saniyede bir güncelle
+        document.addEventListener('visibilitychange', () => poller.refresh());
+        if (window.luxedge && window.luxedge.onWindowVisibility) {
+            window.luxedge.onWindowVisibility(visible => {
+                electronVisible = visible;
+                poller.refresh();
+            });
+        }
+        poller.refresh();
         startNewDevice();
         fetchDevices();
         fetchStatus();

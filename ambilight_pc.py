@@ -13,6 +13,10 @@ import uuid
 import logging
 import logging.handlers
 from collections import deque
+from frame_processing import FrameCapture, edge_colors, edge_rgb, pack_rgb, solid_frame, frame_delay
+from monitor_catalog import MonitorCatalog
+
+monitor_catalog = MonitorCatalog()
 
 # Windows konsolunda emoji/Unicode desteği için encoding'i UTF-8'e ayarla.
 # PyInstaller --noconsole çalıştırmalarında stdout/stderr None olabilir.
@@ -20,14 +24,8 @@ if sys.stdout is not None and hasattr(sys.stdout, 'buffer') and sys.stdout.encod
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 if sys.stderr is not None and hasattr(sys.stderr, 'buffer') and sys.stderr.encoding != 'utf-8':
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
-if sys.platform == 'win32':
-    import winreg
-    import ctypes
-    try:
-        # Windows zamanlayıcı çözünürlüğünü 1ms hassasiyete ayarla (Hassas sleep için)
-        ctypes.windll.winmm.timeBeginPeriod(1)
-    except Exception:
-        pass
+import winreg
+import ctypes
 import threading
 import urllib.request
 import urllib.parse
@@ -65,10 +63,7 @@ class _MemoryLogHandler(logging.Handler):
 
 def _get_log_dir():
     """Log dosyası dizinini döndürür"""
-    if sys.platform == 'win32':
-        return os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'LuxEdge')
-    else:
-        return os.path.join(os.environ.get('XDG_CONFIG_HOME', os.path.join(os.path.expanduser('~'), '.config')), 'LuxEdge')
+    return os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'LuxEdge')
 
 def setup_logger():
     """Logger'ı rotating dosya + bellek handler ile kur"""
@@ -106,7 +101,7 @@ def setup_logger():
 log = setup_logger()
 
 # Windows'ta subprocess çağrılarında CMD penceresi açılmasını engelle
-CREATE_NO_WINDOW = 0x08000000 if sys.platform == 'win32' else 0
+CREATE_NO_WINDOW = 0x08000000
 
 def _subprocess_kwargs():
     """Platform'a uygun subprocess parametreleri döndürür"""
@@ -116,8 +111,7 @@ def _subprocess_kwargs():
         'errors': 'ignore',
         'stdin': subprocess.DEVNULL
     }
-    if sys.platform == 'win32':
-        kwargs['creationflags'] = CREATE_NO_WINDOW
+    kwargs['creationflags'] = CREATE_NO_WINDOW
     return kwargs
 
 try:
@@ -149,10 +143,7 @@ def get_config_path():
         old_path = CONFIG_FILE
         
     # 2. Yeni Kullanıcıya özel sorunsuz dizin
-    if sys.platform == 'win32':
-        config_dir = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'LuxEdge')
-    else:
-        config_dir = os.path.join(os.environ.get('XDG_CONFIG_HOME', os.path.join(os.path.expanduser('~'), '.config')), 'LuxEdge')
+    config_dir = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'LuxEdge')
     
     os.makedirs(config_dir, exist_ok=True)
     new_path = os.path.join(config_dir, "ambilight_config.json")
@@ -409,53 +400,36 @@ def get_local_ip():
     except Exception:
         pass
 
-    if sys.platform == 'win32':
-        try:
-            # Yöntem 2 (Windows): ipconfig çıktısını analiz et
-            result = subprocess.run(
-                ['ipconfig'],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                creationflags=CREATE_NO_WINDOW,
-                errors='ignore',
-                stdin=subprocess.DEVNULL
-            )
-            lines = result.stdout.split('\n')
-            in_active_section = False
-            for line in lines:
-                if 'Wireless LAN adapter' in line or 'Kablosuz LAN' in line:
-                    in_active_section = True
-                elif 'Ethernet adapter' in line or 'Ethernet Bağdaştırıcısı' in line:
-                    in_active_section = True
-                elif line.strip() == '' and in_active_section:
-                    pass
-                elif in_active_section and ('IPv4' in line or 'IPv4' in line):
-                    ip_match = re.search(r'(\d+\.\d+\.\d+\.\d+)', line)
-                    if ip_match:
-                        found_ip = ip_match.group(1)
-                        if found_ip != '127.0.0.1':
-                            return found_ip
-                elif 'adapter' in line.lower() and ':' in line:
-                    in_active_section = False
-        except Exception:
-            pass
-    else:
-        try:
-            # Yöntem 2 (Linux): ip addr çıktısını analiz et
-            result = subprocess.run(
-                ['ip', '-4', 'addr', 'show'],
-                capture_output=True, text=True, timeout=10,
-                errors='ignore', stdin=subprocess.DEVNULL
-            )
-            for line in result.stdout.split('\n'):
-                line = line.strip()
-                if line.startswith('inet ') and '127.0.0.1' not in line:
-                    ip_match = re.search(r'inet\s+(\d+\.\d+\.\d+\.\d+)', line)
-                    if ip_match:
-                        return ip_match.group(1)
-        except Exception:
-            pass
+    try:
+        # Yöntem 2 (Windows): ipconfig çıktısını analiz et
+        result = subprocess.run(
+            ['ipconfig'],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            creationflags=CREATE_NO_WINDOW,
+            errors='ignore',
+            stdin=subprocess.DEVNULL
+        )
+        lines = result.stdout.split('\n')
+        in_active_section = False
+        for line in lines:
+            if 'Wireless LAN adapter' in line or 'Kablosuz LAN' in line:
+                in_active_section = True
+            elif 'Ethernet adapter' in line or 'Ethernet Bağdaştırıcısı' in line:
+                in_active_section = True
+            elif line.strip() == '' and in_active_section:
+                pass
+            elif in_active_section and ('IPv4' in line or 'IPv4' in line):
+                ip_match = re.search(r'(\d+\.\d+\.\d+\.\d+)', line)
+                if ip_match:
+                    found_ip = ip_match.group(1)
+                    if found_ip != '127.0.0.1':
+                        return found_ip
+            elif 'adapter' in line.lower() and ':' in line:
+                in_active_section = False
+    except Exception:
+        pass
 
     try:
         # Yöntem 3: hostname üzerinden
@@ -480,31 +454,18 @@ def get_all_active_ips():
     except Exception:
         pass
 
-    if sys.platform == 'win32':
-        try:
-            # ipconfig ile daha detaylı (Windows)
-            result = subprocess.run(['ipconfig'], capture_output=True, text=True, creationflags=CREATE_NO_WINDOW, errors='ignore', stdin=subprocess.DEVNULL)
-            for line in result.stdout.split('\n'):
-                if 'IPv4' in line or 'IPv4' in line:
-                    match = re.search(r'(\d+\.\d+\.\d+\.\d+)', line)
-                    if match:
-                        ip = match.group(1)
-                        if not ip.startswith('127.'):
-                            ips.add(ip)
-        except Exception:
-            pass
-    else:
-        try:
-            # ip addr ile daha detaylı (Linux)
-            result = subprocess.run(['ip', '-4', 'addr', 'show'], capture_output=True, text=True, errors='ignore', stdin=subprocess.DEVNULL)
-            for line in result.stdout.split('\n'):
-                match = re.search(r'inet\s+(\d+\.\d+\.\d+\.\d+)', line)
+    try:
+        # ipconfig ile daha detaylı (Windows)
+        result = subprocess.run(['ipconfig'], capture_output=True, text=True, creationflags=CREATE_NO_WINDOW, errors='ignore', stdin=subprocess.DEVNULL)
+        for line in result.stdout.split('\n'):
+            if 'IPv4' in line or 'IPv4' in line:
+                match = re.search(r'(\d+\.\d+\.\d+\.\d+)', line)
                 if match:
                     ip = match.group(1)
                     if not ip.startswith('127.'):
                         ips.add(ip)
-        except Exception:
-            pass
+    except Exception:
+        pass
         
     return list(ips)
 
@@ -518,44 +479,24 @@ def get_subnet_base(ip):
 
 def get_subnet_mask():
     """Ağ maskesini döndürür"""
-    if sys.platform == 'win32':
-        try:
-            result = subprocess.run(
-                ['ipconfig'],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                creationflags=CREATE_NO_WINDOW,
-                errors='ignore',
-                stdin=subprocess.DEVNULL
-            )
-            lines = result.stdout.split('\n')
-            for i, line in enumerate(lines):
-                if 'Subnet Mask' in line or 'Alt Ağ Maskesi' in line:
-                    mask_match = re.search(r'(\d+\.\d+\.\d+\.\d+)', line)
-                    if mask_match:
-                        return mask_match.group(1)
-        except Exception:
-            pass
-    else:
-        try:
-            # Linux: ip addr çıktısından CIDR prefix'ini mask'a çevir
-            local_ip = get_local_ip()
-            if local_ip:
-                result = subprocess.run(
-                    ['ip', '-4', 'addr', 'show'],
-                    capture_output=True, text=True, timeout=10,
-                    errors='ignore', stdin=subprocess.DEVNULL
-                )
-                for line in result.stdout.split('\n'):
-                    if local_ip in line:
-                        cidr_match = re.search(r'/(\d+)', line)
-                        if cidr_match:
-                            prefix = int(cidr_match.group(1))
-                            mask = (0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF
-                            return f"{(mask >> 24) & 0xFF}.{(mask >> 16) & 0xFF}.{(mask >> 8) & 0xFF}.{mask & 0xFF}"
-        except Exception:
-            pass
+    try:
+        result = subprocess.run(
+            ['ipconfig'],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            creationflags=CREATE_NO_WINDOW,
+            errors='ignore',
+            stdin=subprocess.DEVNULL
+        )
+        lines = result.stdout.split('\n')
+        for i, line in enumerate(lines):
+            if 'Subnet Mask' in line or 'Alt Ağ Maskesi' in line:
+                mask_match = re.search(r'(\d+\.\d+\.\d+\.\d+)', line)
+                if mask_match:
+                    return mask_match.group(1)
+    except Exception:
+        pass
     return '255.255.255.0'
 
 def find_wemos_ip_on_network(progress_callback=None):
@@ -790,128 +731,75 @@ def send_wifi_config_to_wemos(hotspot_ip, wifi_ssid, wifi_password, method='http
 
 def scan_available_wifi_networks():
     """Görünen Wi-Fi ağlarını tarar"""
-    if sys.platform == 'win32':
-        try:
-            result = subprocess.run(
-                ['netsh', 'wlan', 'show', 'networks', 'mode=Bssid'],
-                capture_output=True,
-                text=True,
-                timeout=15,
-                creationflags=CREATE_NO_WINDOW,
-                errors='ignore',
-                stdin=subprocess.DEVNULL
-            )
-            networks = []
-            for line in result.stdout.split('\n'):
-                line = line.strip()
-                if line.startswith('SSID'):
-                    parts = line.split(':', 1)
-                    if len(parts) > 1:
-                        current_ssid = parts[1].strip()
-                        if current_ssid and current_ssid not in networks:
-                            networks.append(current_ssid)
-            return networks
-        except Exception:
-            return []
-    else:
-        # Linux: nmcli ile Wi-Fi tarama
-        try:
-            result = subprocess.run(
-                ['nmcli', '-t', '-f', 'SSID', 'device', 'wifi', 'list', '--rescan', 'yes'],
-                capture_output=True, text=True, timeout=15,
-                errors='ignore', stdin=subprocess.DEVNULL
-            )
-            networks = []
-            for line in result.stdout.split('\n'):
-                ssid = line.strip()
-                if ssid and ssid not in networks:
-                    networks.append(ssid)
-            return networks
-        except Exception:
-            return []
+    try:
+        result = subprocess.run(
+            ['netsh', 'wlan', 'show', 'networks', 'mode=Bssid'],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            creationflags=CREATE_NO_WINDOW,
+            errors='ignore',
+            stdin=subprocess.DEVNULL
+        )
+        networks = []
+        for line in result.stdout.split('\n'):
+            line = line.strip()
+            if line.startswith('SSID'):
+                parts = line.split(':', 1)
+                if len(parts) > 1:
+                    current_ssid = parts[1].strip()
+                    if current_ssid and current_ssid not in networks:
+                        networks.append(current_ssid)
+        return networks
+    except Exception:
+        return []
 
 def find_wemos_hotspot():
     """Wemos hotspot'unu otomatik bulur (locale uyumlu)"""
     wemos_keywords = ['wemos', 'ambilight', 'setup', 'config', 'esp']
     # Her Windows diline göre en olası SSID etiketleri
     ssid_labels = ['ssid', 'ID', 'AG', 'WLAN', 'Ad', 'Nomi', 'ชื่อ', '네트워크', 'Réseau']
-    if sys.platform == 'win32':
-        try:
-            result = subprocess.run(
-                ['netsh', 'wlan', 'show', 'networks', 'mode=Bssid'],
-                capture_output=True,
-                text=True,
-                timeout=15,
-                creationflags=CREATE_NO_WINDOW,
-                errors='ignore',
-                stdin=subprocess.DEVNULL
-            )
-            for line in result.stdout.split('\n'):
-                line_lower = line.strip().lower()
-                for keyword in wemos_keywords:
-                    # Her SSID etiketine göre etiket arama
-                    for ssid_label in ssid_labels:
-                        if keyword in line_lower and ssid_label in line_lower:
-                            ssid_match = re.search(rf'{re.escape(ssid_label)}\s*\d*\s*:\s*(.+)', line, re.IGNORECASE)
-                            if ssid_match:
-                                return ssid_match.group(1).strip()
-            return None
-        except Exception:
-            return None
-    else:
-        # Linux: nmcli ile Wemos hotspot ara
-        try:
-            result = subprocess.run(
-                ['nmcli', '-t', '-f', 'SSID', 'device', 'wifi', 'list'],
-                capture_output=True, text=True, timeout=15,
-                errors='ignore', stdin=subprocess.DEVNULL
-            )
-            for line in result.stdout.split('\n'):
-                ssid = line.strip()
-                for keyword in wemos_keywords:
-                    if keyword in ssid.lower():
-                        return ssid
-            return None
-        except Exception:
-            return None
+    try:
+        result = subprocess.run(
+            ['netsh', 'wlan', 'show', 'networks', 'mode=Bssid'],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            creationflags=CREATE_NO_WINDOW,
+            errors='ignore',
+            stdin=subprocess.DEVNULL
+        )
+        for line in result.stdout.split('\n'):
+            line_lower = line.strip().lower()
+            for keyword in wemos_keywords:
+                # Her SSID etiketine göre etiket arama
+                for ssid_label in ssid_labels:
+                    if keyword in line_lower and ssid_label in line_lower:
+                        ssid_match = re.search(rf'{re.escape(ssid_label)}\s*\d*\s*:\s*(.+)', line, re.IGNORECASE)
+                        if ssid_match:
+                            return ssid_match.group(1).strip()
+        return None
+    except Exception:
+        return None
 
 def connect_to_wifi(ssid, password=None):
     """Belirli bir Wi-Fi ağına bağlanır"""
-    if sys.platform == 'win32':
-        try:
-            if password:
-                result = subprocess.run(
-                    ['netsh', 'wlan', 'connect', f'name={ssid}'],
-                    capture_output=True, text=True, timeout=30,
-                    creationflags=CREATE_NO_WINDOW, errors='ignore', stdin=subprocess.DEVNULL
-                )
-            else:
-                result = subprocess.run(
-                    ['netsh', 'wlan', 'connect', f'name={ssid}'],
-                    capture_output=True, text=True, timeout=30,
-                    creationflags=CREATE_NO_WINDOW, errors='ignore', stdin=subprocess.DEVNULL
-                )
-            return 'başarıyla bağlandı' in result.stdout.lower() or 'successfully' in result.stdout.lower()
-        except Exception:
-            return False
-    else:
-        # Linux: nmcli ile Wi-Fi bağlantısı
-        try:
-            if password:
-                result = subprocess.run(
-                    ['nmcli', 'device', 'wifi', 'connect', ssid, 'password', password],
-                    capture_output=True, text=True, timeout=30,
-                    errors='ignore', stdin=subprocess.DEVNULL
-                )
-            else:
-                result = subprocess.run(
-                    ['nmcli', 'device', 'wifi', 'connect', ssid],
-                    capture_output=True, text=True, timeout=30,
-                    errors='ignore', stdin=subprocess.DEVNULL
-                )
-            return result.returncode == 0
-        except Exception:
-            return False
+    try:
+        if password:
+            result = subprocess.run(
+                ['netsh', 'wlan', 'connect', f'name={ssid}'],
+                capture_output=True, text=True, timeout=30,
+                creationflags=CREATE_NO_WINDOW, errors='ignore', stdin=subprocess.DEVNULL
+            )
+        else:
+            result = subprocess.run(
+                ['netsh', 'wlan', 'connect', f'name={ssid}'],
+                capture_output=True, text=True, timeout=30,
+                creationflags=CREATE_NO_WINDOW, errors='ignore', stdin=subprocess.DEVNULL
+            )
+        return 'başarıyla bağlandı' in result.stdout.lower() or 'successfully' in result.stdout.lower()
+    except Exception:
+        return False
 
 # ============================================================
 # KULLANICI GİRDİ FONKSİYONLARI
@@ -1117,45 +1005,24 @@ def hex_to_rgb(hex_color):
         return (255, 0, 0)
 
 def get_system_accent_color():
-    """Sistem vurgu rengini döndürür (Windows/Linux), güvenli fallback ile"""
+    """Sistem vurgu rengini döndürür (Windows), güvenli fallback ile"""
     try:
-        if sys.platform == 'win32':
-            try:
-                registry = winreg.ConnectRegistry(None, winreg.HKEY_CURRENT_USER)
-                key = winreg.OpenKey(registry, r"Software\Microsoft\Windows\DWM")
-                value, _ = winreg.QueryValueEx(key, "ColorizationColor")
-                winreg.CloseKey(key)
+        try:
+            registry = winreg.ConnectRegistry(None, winreg.HKEY_CURRENT_USER)
+            key = winreg.OpenKey(registry, r"Software\Microsoft\Windows\DWM")
+            value, _ = winreg.QueryValueEx(key, "ColorizationColor")
+            winreg.CloseKey(key)
 
-                # ColorizationColor genelde ARGB (AARRGGBB) formatındadır, bize RGB lazım
-                color_hex = f"{value:08x}"
-                if len(color_hex) == 8:
-                    r = int(color_hex[2:4], 16)
-                    g = int(color_hex[4:6], 16)
-                    b = int(color_hex[6:8], 16)
-                    return f"#{r:02x}{g:02x}{b:02x}"
-            except Exception:
-                log.warning(f"[ACCENT] Windows DWM registry'dan vurgu rengi okunamadı")
-                pass
-        else:
-            # Linux: GNOME/KDE accent color okumayı dene
-            try:
-                result = subprocess.run(
-                    ['gsettings', 'get', 'org.gnome.desktop.interface', 'accent-color'],
-                    capture_output=True, text=True, timeout=5,
-                    errors='ignore', stdin=subprocess.DEVNULL
-                )
-                color_name = result.stdout.strip().strip("'")
-                # GNOME accent color isimleri
-                gnome_colors = {
-                    'blue': '#3584e4', 'teal': '#2190a4', 'green': '#3a944a',
-                    'yellow': '#c88800', 'orange': '#ed5b00', 'red': '#e62d42',
-                    'pink': '#d56199', 'purple': '#9141ac', 'slate': '#6f8396'
-                }
-                if color_name in gnome_colors:
-                    return gnome_colors[color_name]
-            except Exception:
-                log.warning(f"[ACCENT] Linux gsettings'ten vurgu rengi okunamadı")
-                pass
+            # ColorizationColor genelde ARGB (AARRGGBB) formatındadır, bize RGB lazım
+            color_hex = f"{value:08x}"
+            if len(color_hex) == 8:
+                r = int(color_hex[2:4], 16)
+                g = int(color_hex[4:6], 16)
+                b = int(color_hex[6:8], 16)
+                return f"#{r:02x}{g:02x}{b:02x}"
+        except Exception:
+            log.warning(f"[ACCENT] Windows DWM registry'dan vurgu rengi okunamadı")
+            pass
 
         # Tüm yöntemler başarısız oldu: güvenli bir fallback kullan
         log.warning(f"[ACCENT] Tüm sistem vurgu rengi yöntemleri başarısız, varsayılan mavi (#3584e4) kullanılıyor")
@@ -1167,13 +1034,10 @@ def get_system_accent_color():
 # Eski isimle uyumluluk
 get_windows_accent_color = get_system_accent_color
 
-# Fullscreen cache (60fps'de her frame'de ağır kontroller yapmamak için - Windows ve Linux)
+# Fullscreen cache (60fps'de her frame'de ağır kontroller yapmamak için - Windows)
 _fullscreen_cache = {'value': False, 'time': 0}
 _FULLSCREEN_CACHE_TTL = 0.5  # 500ms'de bir kontrol et (2. ekrana tıklama anında hızlı tepki)
 
-# Linux X11 display (tek sefer aç, tekrar kullan)
-_x11_display = None
-_x11_lib = None
 
 # --- LED Monitörü Seçimi ---
 # --- LED Monitörü Seçimi ---
@@ -1247,97 +1111,10 @@ def get_available_monitors(sct_inst=None):
         pass
     return monitors_list
 
-def _get_x11_display():
-    """X11 display bağlantısını aç ve cache'le"""
-    global _x11_display, _x11_lib
-    if _x11_lib is None:
-        try:
-            import ctypes.util
-            x11_path = ctypes.util.find_library('X11')
-            if not x11_path:
-                return None, None
-            _x11_lib = ctypes.CDLL(x11_path)
-            
-            # Fonksiyon imzaları (segfault önleme)
-            _x11_lib.XOpenDisplay.restype = ctypes.c_void_p
-            _x11_lib.XOpenDisplay.argtypes = [ctypes.c_char_p]
-            _x11_lib.XDefaultRootWindow.restype = ctypes.c_ulong
-            _x11_lib.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
-            _x11_lib.XGetGeometry.restype = ctypes.c_int
-            _x11_lib.XGetGeometry.argtypes = [
-                ctypes.c_void_p, ctypes.c_ulong,
-                ctypes.POINTER(ctypes.c_ulong),
-                ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int),
-                ctypes.POINTER(ctypes.c_uint), ctypes.POINTER(ctypes.c_uint),
-                ctypes.POINTER(ctypes.c_uint), ctypes.POINTER(ctypes.c_uint)
-            ]
-            _x11_lib.XTranslateCoordinates.restype = ctypes.c_int
-            _x11_lib.XTranslateCoordinates.argtypes = [
-                ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong,
-                ctypes.c_int, ctypes.c_int,
-                ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int),
-                ctypes.POINTER(ctypes.c_ulong)
-            ]
-        except Exception:
-            _x11_lib = False  # Başarısız — tekrar deneme
-            return None, None
-    
-    if _x11_lib is False:
-        return None, None
-    
-    if _x11_display is None:
-        _x11_display = _x11_lib.XOpenDisplay(None)
-    
-    return _x11_lib, _x11_display
 
-def _get_window_root_position(window_id_hex):
-    """Pencerenin root (mutlak) X,Y koordinatlarını döndürür (ctypes X11)"""
-    import ctypes
-    xlib, display = _get_x11_display()
-    if not xlib or not display:
-        return None, None
-    
-    try:
-        wid = int(window_id_hex, 16)
-        root = xlib.XDefaultRootWindow(display)
-        
-        root_x = ctypes.c_int()
-        root_y = ctypes.c_int()
-        child_return = ctypes.c_ulong()
-        
-        xlib.XTranslateCoordinates(
-            display, wid, root,
-            0, 0,
-            ctypes.byref(root_x), ctypes.byref(root_y),
-            ctypes.byref(child_return)
-        )
-        return root_x.value, root_y.value
-    except Exception:
-        return None, None
 
-def _is_window_on_led_monitor(window_id_hex):
-    """Pencerenin LED monitöründe olup olmadığını kontrol eder"""
-    try:
-        from mss import mss
-        with mss() as sct:
-            led_idx = get_led_monitor_index(sct)
-            if led_idx >= len(sct.monitors) or led_idx <= 0:
-                led_idx = get_primary_monitor_index(sct)
-            led_monitor = sct.monitors[led_idx]
-        
-        root_x, root_y = _get_window_root_position(window_id_hex)
-        if root_x is None:
-            return True  # Pozisyon alınamadıysa, varsayılan: True (eski davranış)
-        
-        # Pencere LED monitörünün x aralığında mı kontrol et
-        mon_left = led_monitor['left']
-        mon_right = mon_left + led_monitor['width']
-        
-        return mon_left <= root_x < mon_right
-    except Exception:
-        return True  # Hata durumunda varsayılan: True
 
-def _is_window_fullscreen_on_primary_win32(hwnd):
+def _is_window_fullscreen_on_primary_win32(hwnd, monitor=None):
     """Windows: Verilen pencerenin seçili LED monitöründe tam ekran olup olmadığını kontrol eder"""
     try:
         import ctypes
@@ -1370,15 +1147,9 @@ def _is_window_fullscreen_on_primary_win32(hwnd):
         w = rect.right - rect.left
         h = rect.bottom - rect.top
         
-        # Seçili LED monitörünün koordinatlarına göre kontrol et
-        try:
-            with mss() as s:
-                led_idx = get_led_monitor_index(s)
-                if 0 < led_idx < len(s.monitors):
-                    m = s.monitors[led_idx]
-                    return (w == m['width'] and h == m['height'] and rect.left == m['left'] and rect.top == m['top'])
-        except Exception:
-            pass
+        if monitor is not None:
+            return (w == monitor['width'] and h == monitor['height']
+                    and rect.left == monitor['left'] and rect.top == monitor['top'])
 
         screen_w = user32.GetSystemMetrics(0)
         screen_h = user32.GetSystemMetrics(1)
@@ -1386,104 +1157,44 @@ def _is_window_fullscreen_on_primary_win32(hwnd):
     except Exception:
         return False
 
-def is_fullscreen():
-    if sys.platform == 'win32':
-        try:
-            import ctypes
-            from ctypes import wintypes
-            user32 = ctypes.windll.user32
-            
-            # Önce foreground window'u kontrol et (en hızlı yol, her frame'de çalışabilir)
-            hwnd = user32.GetForegroundWindow()
-            if hwnd and _is_window_fullscreen_on_primary_win32(hwnd):
-                _fullscreen_cache['value'] = True
-                _fullscreen_cache['time'] = time.time()
-                return True
-            
-            # Foreground fullscreen değilse, cache'li EnumWindows taraması yap
-            # (2. ekrana tıklanmışsa, 1. ekranda hala fullscreen pencere olabilir)
-            now = time.time()
-            if now - _fullscreen_cache['time'] < _FULLSCREEN_CACHE_TTL:
-                return _fullscreen_cache['value']
-            
-            found_fullscreen = [False]
-            
-            WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-            
-            def enum_callback(hwnd, lParam):
-                if _is_window_fullscreen_on_primary_win32(hwnd):
-                    found_fullscreen[0] = True
-                    return False  # Taramayı durdur, bulduk
-                return True  # Devam et
-            
-            user32.EnumWindows(WNDENUMPROC(enum_callback), 0)
-            _fullscreen_cache['value'] = found_fullscreen[0]
-            _fullscreen_cache['time'] = now
-            return found_fullscreen[0]
-        except Exception:
-            return False
-    else:
-        # Linux: xprop ile tam ekran kontrolü (X11) + çoklu monitör desteği
-        # Performans: Cache kullan, her frame'de subprocess çağırma
+def is_fullscreen(monitor=None):
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+
+        # Önce foreground window'u kontrol et (en hızlı yol, her frame'de çalışabilir)
+        hwnd = user32.GetForegroundWindow()
+        if hwnd and _is_window_fullscreen_on_primary_win32(hwnd, monitor):
+            _fullscreen_cache['value'] = True
+            _fullscreen_cache['time'] = time.time()
+            return True
+
+        # Foreground fullscreen değilse, cache'li EnumWindows taraması yap
+        # (2. ekrana tıklanmışsa, 1. ekranda hala fullscreen pencere olabilir)
         now = time.time()
         if now - _fullscreen_cache['time'] < _FULLSCREEN_CACHE_TTL:
             return _fullscreen_cache['value']
-        
-        result_val = False
-        try:
-            # Önce aktif pencereyi kontrol et (hızlı yol)
-            result = subprocess.run(
-                ['xprop', '-root', '_NET_ACTIVE_WINDOW'],
-                capture_output=True, text=True, timeout=1,
-                errors='ignore', stdin=subprocess.DEVNULL
-            )
-            match = re.search(r'window id # (0x[0-9a-fA-F]+)', result.stdout)
-            if match:
-                window_id = match.group(1)
-                result2 = subprocess.run(
-                    ['xprop', '-id', window_id, '_NET_WM_STATE'],
-                    capture_output=True, text=True, timeout=1,
-                    errors='ignore', stdin=subprocess.DEVNULL
-                )
-                if '_NET_WM_STATE_FULLSCREEN' in result2.stdout:
-                    if _is_window_on_led_monitor(window_id):
-                        result_val = True
-            
-            # Aktif pencere fullscreen değilse, TÜM pencereleri tara
-            # (kullanıcı 2. ekrana tıklamış olabilir)
-            if not result_val:
-                result_all = subprocess.run(
-                    ['xprop', '-root', '_NET_CLIENT_LIST'],
-                    capture_output=True, text=True, timeout=1,
-                    errors='ignore', stdin=subprocess.DEVNULL
-                )
-                window_ids = re.findall(r'(0x[0-9a-fA-F]+)', result_all.stdout)
-                for wid in window_ids:
-                    try:
-                        res = subprocess.run(
-                            ['xprop', '-id', wid, '_NET_WM_STATE'],
-                            capture_output=True, text=True, timeout=0.5,
-                            errors='ignore', stdin=subprocess.DEVNULL
-                        )
-                        if '_NET_WM_STATE_FULLSCREEN' in res.stdout:
-                            if _is_window_on_led_monitor(wid):
-                                result_val = True
-                                break
-                    except Exception:
-                        continue
-        except Exception:
-            pass
-        
-        _fullscreen_cache['value'] = result_val
+
+        found_fullscreen = [False]
+
+        WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+        def enum_callback(hwnd, lParam):
+            if _is_window_fullscreen_on_primary_win32(hwnd, monitor):
+                found_fullscreen[0] = True
+                return False  # Taramayı durdur, bulduk
+            return True  # Devam et
+
+        user32.EnumWindows(WNDENUMPROC(enum_callback), 0)
+        _fullscreen_cache['value'] = found_fullscreen[0]
         _fullscreen_cache['time'] = now
-        return result_val
+        return found_fullscreen[0]
+    except Exception:
+        return False
 
 def grab_edge_colors(top_leds, bottom_leds, left_leds, right_leds, edge_width, edge_offset, sct, monitor_index=None):
-    """
-    Ekran kenarlarından renkleri toplar.
-    v1.6.1: Tamamen numpy vektörizasyonu ile yeniden yazıldı.
-    PIL.Image.crop() döngüsü kaldırıldı → ~3-4x daha hızlı.
-    """
+    """Ekran kenarlarını önbellekli bölgeler ve toplu RGB toplamlarıyla örnekle."""
     if sct is None or not hasattr(sct, 'monitors'):
         sct = mss()
     led_idx = monitor_index if monitor_index is not None else get_led_monitor_index(sct)
@@ -1491,68 +1202,17 @@ def grab_edge_colors(top_leds, bottom_leds, left_leds, right_leds, edge_width, e
         led_idx = get_primary_monitor_index(sct)
     monitor = sct.monitors[led_idx]
     screenshot = sct.grab(monitor)
-    # mss'den direkt numpy array (BGRA) → RGB'ye çevir (kopyasız dönüşüm)
-    arr = np.frombuffer(screenshot.raw, dtype=np.uint8).reshape(screenshot.height, screenshot.width, 4)[:, :, 2::-1]
-    # arr shape: (H, W, 3) — RGB
+    return edge_colors(screenshot, top_leds, bottom_leds, left_leds, right_leds, edge_width, edge_offset)
 
-    h, w = arr.shape[:2]
-    final_colors = []
-
-    # 1) RIGHT side (bottom → top)
-    if right_leds > 0:
-        strip = arr[:, max(0, w - edge_width - edge_offset):max(0, w - edge_offset) or w, :]  # (H, edge_width, 3)
-        for i in range(right_leds):
-            y1 = int((right_leds - 1 - i) * h / right_leds)
-            y2 = int((right_leds - i) * h / right_leds)
-            if y2 > y1:
-                final_colors.append(tuple(strip[y1:y2].reshape(-1, 3).mean(axis=0).astype(int)))
-            else:
-                final_colors.append((0, 0, 0))
-
-    # 2) TOP side (right → left)
-    if top_leds > 0:
-        strip = arr[edge_offset:edge_width + edge_offset, :, :]  # (edge_width, W, 3)
-        for i in range(top_leds):
-            x1 = int((top_leds - 1 - i) * w / top_leds)
-            x2 = int((top_leds - i) * w / top_leds)
-            if x2 > x1:
-                final_colors.append(tuple(strip[:, x1:x2].reshape(-1, 3).mean(axis=0).astype(int)))
-            else:
-                final_colors.append((0, 0, 0))
-
-    # 3) LEFT side (top → bottom)
-    if left_leds > 0:
-        strip = arr[:, edge_offset:edge_width + edge_offset, :]  # (H, edge_width, 3)
-        for i in range(left_leds):
-            y1 = int(i * h / left_leds)
-            y2 = int((i + 1) * h / left_leds)
-            if y2 > y1:
-                final_colors.append(tuple(strip[y1:y2].reshape(-1, 3).mean(axis=0).astype(int)))
-            else:
-                final_colors.append((0, 0, 0))
-
-    # 4) BOTTOM side (left → right)
-    if bottom_leds > 0:
-        strip = arr[max(0, h - edge_width - edge_offset):max(0, h - edge_offset) or h, :, :]  # (edge_width, W, 3)
-        for i in range(bottom_leds):
-            x1 = int(i * w / bottom_leds)
-            x2 = int((i + 1) * w / bottom_leds)
-            if x2 > x1:
-                final_colors.append(tuple(strip[:, x1:x2].reshape(-1, 3).mean(axis=0).astype(int)))
-            else:
-                final_colors.append((0, 0, 0))
-
-    return final_colors
 
 
 def build_device_frame(device, edge_width, edge_offset, capture):
     """Bir cihazın atanmış monitörü için UDP RGB paketini hesapla.
 
-    Bu yardımcı yalnız paket üretir; gönderim yapmaz. Gölge modunda tekli
-    worker'a dokunmadan çoklu ekran hesaplamasını doğrulamak için kullanılır.
+    Bu yardımcı yalnız paket üretir; gönderim ve bağlantı kontrolü yapmaz.
     """
     leds = device.get("leds", {})
-    colors = grab_edge_colors(
+    return grab_edge_frame(
         int(leds.get("top", 0)),
         int(leds.get("bottom", 0)),
         int(leds.get("left", 0)),
@@ -1562,7 +1222,13 @@ def build_device_frame(device, edge_width, edge_offset, capture):
         capture,
         monitor_index=int(device.get("monitor_index", 1)),
     )
-    return bytes(channel for color in colors for channel in color)
+
+
+def grab_edge_frame(top, bottom, left, right, width, offset, capture, monitor_index, brightness=255):
+    if not 0 < monitor_index < len(capture.monitors):
+        monitor_index = get_primary_monitor_index(capture)
+    screenshot = capture.grab(capture.monitors[monitor_index])
+    return pack_rgb(edge_rgb(screenshot, top, bottom, left, right, width, offset), brightness)
 
 # ============================================================
 # GLOBAL DEĞİŞKENLER VE DURUM
@@ -1677,6 +1343,8 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
         try:
             if self.path == '/api/config':
                 self.handle_config_update()
+            elif self.path == '/api/monitors/refresh':
+                self._safe_send_json(monitor_catalog.refresh(get_available_monitors))
             elif self.path == '/api/devices/mode':
                 self.handle_devices_mode()
             elif self.path == '/api/devices':
@@ -1753,8 +1421,8 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
         status = get_status()
         
         # Monitör listesini ve seçili monitörü ekle
-        status['monitors'] = get_available_monitors()
-        status['led_monitor_index'] = get_led_monitor_index()
+        status.update(monitor_catalog.snapshot())
+        status.setdefault('led_monitor_index', 1)
 
         # Uptime hesapla
         if status['uptime_start'] > 0:
@@ -2114,41 +1782,37 @@ def open_web_ui():
 
 def hide_console():
     """Console penceresini tamamen gizler"""
-    if sys.platform == 'win32':
-        try:
-            import ctypes
-            kernel32 = ctypes.windll.kernel32
-            user32 = ctypes.windll.user32
-            hwnd = kernel32.GetConsoleWindow()
-            if hwnd:
-                user32.ShowWindow(hwnd, 0)
-                kernel32.FreeConsole()
-        except Exception:
-            pass
-    # Linux'ta konsol gizleme gerekli değil (Electron zaten arka planda çalıştırır)
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        user32 = ctypes.windll.user32
+        hwnd = kernel32.GetConsoleWindow()
+        if hwnd:
+            user32.ShowWindow(hwnd, 0)
+            kernel32.FreeConsole()
+    except Exception:
+        pass
 
 def show_console():
     """Console penceresini gösterir"""
-    if sys.platform == 'win32':
-        try:
-            import ctypes
-            kernel32 = ctypes.windll.kernel32
-            user32 = ctypes.windll.user32
-            hwnd = kernel32.GetConsoleWindow()
-            if not hwnd:
-                kernel32.AllocConsole()
-                import msvcrt
-                os.close(0)
-                os.close(1)
-                os.close(2)
-                os.open('CONIN$', os.O_RDWR)
-                os.open('CONOUT$', os.O_WRONLY)
-                os.open('CONOUT$', os.O_WRONLY)
-            else:
-                user32.ShowWindow(hwnd, 1)
-        except Exception:
-            pass
-    # Linux'ta konsol gösterme gerekli değil
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        user32 = ctypes.windll.user32
+        hwnd = kernel32.GetConsoleWindow()
+        if not hwnd:
+            kernel32.AllocConsole()
+            import msvcrt
+            os.close(0)
+            os.close(1)
+            os.close(2)
+            os.open('CONIN$', os.O_RDWR)
+            os.open('CONOUT$', os.O_WRONLY)
+            os.open('CONOUT$', os.O_WRONLY)
+        else:
+            user32.ShowWindow(hwnd, 1)
+    except Exception:
+        pass
 
 # ============================================================
 # AMBILIGHT WORKER
@@ -2383,7 +2047,7 @@ def ambilight_worker(config):
     packets_sent = 0
     errors = 0
     fps_counter = 0
-    fps_timer = time.time()
+    fps_timer = time.perf_counter()
     update_status("errors", 0)
     update_status("packets_sent", 0)
     update_status("actual_fps", 0)
@@ -2406,15 +2070,21 @@ def ambilight_worker(config):
         connectivity_thread.start()
     
     # Periyodik config kontrol sayacı
-    config_check_timer = time.time()
+    config_check_timer = time.perf_counter()
     CONFIG_CHECK_INTERVAL = 3  # Her 3 saniyede bir config kontrol et
-    shadow_frame_summary = None
     multi_device_mode = False
     active_multi_devices = []
     
+    timer_started = False
     try:
+        try:
+            timer_started = ctypes.windll.winmm.timeBeginPeriod(1) == 0
+        except (AttributeError, OSError):
+            pass
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sct = mss()
+        frame_capture = FrameCapture(sct)
+        monitor_version = monitor_catalog.version
         led_idx = get_led_monitor_index(sct)
         if not hasattr(sct, 'monitors') or led_idx >= len(sct.monitors) or led_idx <= 0:
             led_idx = get_primary_monitor_index(sct)
@@ -2423,8 +2093,30 @@ def ambilight_worker(config):
         log.info(f"[MONITOR] Ambilight için kullanılacak monitör: {led_idx} ({mon_name})")
 
         while running:
+            if monitor_catalog.version != monitor_version:
+                # MSS is thread-local: rebuild on the capture thread after the button refresh.
+                monitor_version = monitor_catalog.version
+                replacement = None
+                try:
+                    replacement = mss()
+                    replacement_capture = FrameCapture(replacement)
+                    if len(replacement_capture.monitors) <= 1:
+                        raise ValueError('Kullanılabilir monitör bulunamadı')
+                    replacement_index = get_led_monitor_index(replacement)
+                    if not 0 < replacement_index < len(replacement_capture.monitors):
+                        replacement_index = get_primary_monitor_index(replacement)
+                except Exception as error:
+                    if replacement is not None:
+                        replacement.close()
+                    log.warning(f'[MONITOR] Yakalama yenilenemedi; mevcut ekran korunuyor: {error}')
+                else:
+                    previous_capture = sct
+                    sct, frame_capture, led_idx = replacement, replacement_capture, replacement_index
+                    previous_capture.close()
+                    update_status('led_monitor_index', led_idx)
+                    _fullscreen_cache['time'] = 0
             # Periyodik config kontrolü (IP değişikliğini canlı algıla)
-            current_time_check = time.time()
+            current_time_check = time.perf_counter()
             if current_time_check - config_check_timer >= CONFIG_CHECK_INTERVAL:
                 config_check_timer = current_time_check
                 new_config = load_config()
@@ -2488,9 +2180,12 @@ def ambilight_worker(config):
                         update_status("fps", FPS)
                         print("✓ (Worker) LED / Kenar / Bekleme Modu Konfigürasyonları Canlı Olarak Güncellendi.")
                     
-                    new_mon_idx = new_config.get("led_monitor_index")
+                    new_mon_idx = os.environ.get("LED_MONITOR_INDEX") or new_config.get("led_monitor_index", get_primary_monitor_index(sct))
                     if new_mon_idx is not None and int(new_mon_idx) != led_idx:
                         led_idx = int(new_mon_idx)
+                        if not 0 < led_idx < len(sct.monitors):
+                            led_idx = get_primary_monitor_index(sct)
+                        _fullscreen_cache['time'] = 0
                         update_status("led_monitor_index", led_idx)
                         log.info(f"[CONFIG] Hedef LED monitörü güncellendi: {led_idx}")
 
@@ -2513,28 +2208,8 @@ def ambilight_worker(config):
                         )
                         connectivity_thread.start()
 
-                    # Çoklu cihaz yolunu gölge modda doğrula. Bu aşamada
-                    # üretilen frame hiçbir sokete gönderilmez.
-                    shadow_frames = []
-                    for shadow_device in normalize_config_for_multi_device(new_config)["wemos_devices"]:
-                        try:
-                            shadow_frame = build_device_frame(
-                                shadow_device, EDGE_WIDTH, EDGE_OFFSET, sct
-                            )
-                            shadow_frames.append({
-                                "id": shadow_device["id"],
-                                "bytes": len(shadow_frame),
-                                "ip": shadow_device["ip"],
-                            })
-                        except Exception as shadow_error:
-                            log.warning(
-                                f"[SHADOW] {shadow_device.get('id', 'bilinmeyen')} frame hesaplanamadı: {shadow_error}"
-                            )
-                    summary = tuple((item["id"], item["bytes"]) for item in shadow_frames)
-                    if summary != shadow_frame_summary:
-                        shadow_frame_summary = summary
-                        log.info(f"[SHADOW] Çoklu cihaz frame planı: {shadow_frames}")
-                    update_status("shadow_device_frames", shadow_frames)
+                    # Compatibility field: diagnostics must not capture unused screens.
+                    update_status("shadow_device_frames", [])
 
                     multi_config = normalize_config_for_multi_device(new_config)
                     multi_device_mode = multi_config["multi_device_enabled"]
@@ -2562,7 +2237,9 @@ def ambilight_worker(config):
             try:
                 data = bytearray()
 
-                is_full = is_fullscreen()
+                frame_capture.begin_frame()
+                monitor = sct.monitors[led_idx] if 0 < led_idx < len(sct.monitors) else None
+                is_full = is_fullscreen(monitor) if IDLE_MODE or FULLSCREEN_MAX_BRIGHTNESS < 255 else False
 
                 if IDLE_MODE and not is_full:
                     if IDLE_USE_WINDOWS_COLOR:
@@ -2575,24 +2252,18 @@ def ambilight_worker(config):
                     r = int(ir * b_ratio)
                     g = int(ig * b_ratio)
                     b = int(ib * b_ratio)
-                    for _ in range(TOTAL_LEDS):
-                        data += bytes([r, g, b])
-                else:
-                    colors = grab_edge_colors(TOP_LEDS, BOTTOM_LEDS, LEFT_LEDS, RIGHT_LEDS, EDGE_WIDTH, EDGE_OFFSET, sct)
-                    if is_full and FULLSCREEN_MAX_BRIGHTNESS < 255:
-                        b_ratio = FULLSCREEN_MAX_BRIGHTNESS / 255.0
-                        for r, g, b in colors:
-                            data += bytes([int(r * b_ratio), int(g * b_ratio), int(b * b_ratio)])
-                    else:
-                        for r, g, b in colors:
-                            data += bytes([r, g, b])
+                    data = solid_frame(r, g, b, TOTAL_LEDS)
+                elif not multi_device_mode:
+                    brightness = FULLSCREEN_MAX_BRIGHTNESS if is_full else 255
+                    data = grab_edge_frame(TOP_LEDS, BOTTOM_LEDS, LEFT_LEDS, RIGHT_LEDS,
+                                           EDGE_WIDTH, EDGE_OFFSET, frame_capture, led_idx, brightness)
 
                 if multi_device_mode:
                     for multi_device in active_multi_devices:
                         if IDLE_MODE and not is_full:
-                            multi_data = bytes(data[:3]) * sum(multi_device["leds"].values())
+                            multi_data = solid_frame(r, g, b, sum(multi_device["leds"].values()))
                         else:
-                            multi_data = build_device_frame(multi_device, EDGE_WIDTH, EDGE_OFFSET, sct)
+                            multi_data = build_device_frame(multi_device, EDGE_WIDTH, EDGE_OFFSET, frame_capture)
                         sock.sendto(multi_data, (multi_device["ip"], multi_device["port"]))
                         packets_sent += 1
                 else:
@@ -2601,7 +2272,7 @@ def ambilight_worker(config):
                 fps_counter += 1
 
                 # Her 2 saniyede bir FPS ve paket sayısını güncelle
-                current_time = time.time()
+                current_time = time.perf_counter()
                 if current_time - fps_timer >= 2.0:
                     actual_fps = fps_counter / (current_time - fps_timer)
                     update_status("actual_fps", round(actual_fps, 1))
@@ -2612,10 +2283,7 @@ def ambilight_worker(config):
                         log.warning(f"[WORKER] Düşük FPS uyarısı: {actual_fps:.1f} FPS (hedef: {FPS})")
 
                 # v1.6.2: Adaptive sleep - timeBeginPeriod(1) sayesinde 1ms hassasiyetle uyuyabiliriz
-                elapsed = time.perf_counter() - frame_start
-                remaining = sleep_time - elapsed
-                if remaining >= 0.001:
-                    time.sleep(remaining)
+                time.sleep(frame_delay(frame_start, time.perf_counter(), sleep_time))
 
             except Exception as e:
                 errors += 1
@@ -2630,6 +2298,11 @@ def ambilight_worker(config):
         update_status("connection", "bağlantı hatası")
         update_status("last_error", str(e))
     finally:
+        if timer_started:
+            try:
+                ctypes.windll.winmm.timeEndPeriod(1)
+            except (AttributeError, OSError):
+                pass
         update_status("running", False)
         update_status("connection", "kapalı")
         if sock:
@@ -2644,9 +2317,10 @@ def ambilight_worker(config):
 def main():
     """Ana program"""
     global running, ambilight_thread, icon
+    monitor_catalog.refresh(get_available_monitors)
     
     print("\n" + "="*60)
-    print("  AMBILIGHT PC v1.6.4 - Linux & Windows")
+    print("  AMBILIGHT PC v1.6.4 - Windows")
     print("="*60)
     
     # Konfigürasyonu yükle
