@@ -31,7 +31,8 @@ def verify():
     backend_code = marshal.loads(archive.extract('ambilight_pc'))
     frame_code = archive.open_embedded_archive('PYZ.pyz').extract('frame_processing')
     catalog_code = archive.open_embedded_archive('PYZ.pyz').extract('monitor_catalog')
-    for name, code in [('ambilight_pc', backend_code), ('frame_processing', frame_code), ('monitor_catalog', catalog_code)]:
+    connectivity_code = archive.open_embedded_archive('PYZ.pyz').extract('connectivity')
+    for name, code in [('ambilight_pc', backend_code), ('frame_processing', frame_code), ('monitor_catalog', catalog_code), ('connectivity', connectivity_code)]:
         source = (ROOT / f'{name}.py').read_text(encoding='utf-8')
         assert same_code(code, compile(source, f'{name}.py', 'exec')), f'Stale code: {name}'
     print('Backend bytecode matches current source; SHA256:', hashes[0])
