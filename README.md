@@ -4,7 +4,7 @@
     <strong>Monitör arkası LED aydınlatmasını otomatik olarak yöneten, Electron + Python tabanlı masaüstü uygulaması</strong>
   </p>
   <p align="center">
-    <img src="https://img.shields.io/badge/version-1.6.4-blue?style=flat-square" alt="Version">
+    <img src="https://img.shields.io/badge/version-1.6.4.2-blue?style=flat-square" alt="Version">
     <img src="https://img.shields.io/badge/platform-Windows-0078D6?style=flat-square&logo=windows&logoColor=white" alt="Platform">
     <img src="https://img.shields.io/badge/license-CC%20BY--NC%204.0-green?style=flat-square" alt="License">
     <img src="https://img.shields.io/badge/hardware-ESP8266%20(Wemos)-red?style=flat-square" alt="Hardware">
@@ -101,7 +101,7 @@ Linux desteği, derleme betiği ve paket hedefleri kaldırılmıştır. Mevcut h
 
 ## 🚀 Kurulum
 
-Hazır paket için `LuxEdge Setup 1.6.4.exe` dosyasını kullanın. Aşağıdaki adımlar geliştiriciler içindir.
+Hazır paket için `LuxEdge Setup 1.6.4.2.exe` dosyasını kullanın. Aşağıdaki adımlar geliştiriciler içindir.
 
 ### 1. Projeyi İndirin
 ```powershell
@@ -158,7 +158,7 @@ Electron için `node_modules/electron/dist` kullanılır; derleme önbellekleri 
 altında tutulur. Gerekli NSIS araçları önbellekte yoksa ilk derlemede indirilir.
 Paketlenen backend'in SHA256 özeti kaynak binary ile karşılaştırılır.
 
-Çıktı: **`dist/LuxEdge Setup 1.6.4.exe`**. Bu işlem kurulum veya canlı uygulama testi yapmaz.
+Çıktı: **`dist/LuxEdge Setup 1.6.4.2.exe`**. Bu işlem kurulum veya canlı uygulama testi yapmaz.
 `npm run dist` yalnız Electron paketini üretir; Python kaynakları değiştiğinde güncel
 backend'in pakete girmesi için yukarıdaki tam derleme betiğini kullanın.
 
@@ -297,9 +297,12 @@ luxedge/
 
 ## 📝 Sürüm Geçmişi
 
-### Geliştirme değişiklikleri — Windows optimizasyonu (8 Ekim 2026)
+### Önceki Windows optimizasyonu (8 Ekim 2026)
 
-Paket sürümü `1.6.4` olarak korunmuştur; aşağıdaki değişiklikler yeni bir sürümün yayımlandığı anlamına gelmez.
+Uygulama ve kurulum dosyası sürümü `1.6.4.2` olarak yayımlanır. Electron Builder'ın
+SemVer kısıtı nedeniyle `package.json` içindeki teknik paket metadata sürümü `1.6.4`,
+uygulamanın görünen sürümü ise `luxedgeVersion: 1.6.4.2` olarak tutulur. Wemos firmware
+sürümü bundan bağımsızdır.
 
 - **Monitör listesi:** Açılışta yükleme, elle Güncelle düğmesi ve durum sorgularında önbellek kullanımı.
 - **Görüntü işleme:** Kare başına ayar okuması ve gereksiz gölge yakalamalar kaldırıldı; aynı monitörün görüntüsü kare içinde paylaşılıyor.
@@ -309,7 +312,12 @@ Paket sürümü `1.6.4` olarak korunmuştur; aşağıdaki değişiklikler yeni b
 - **Platform:** Linux kodu, binary'si ve paket hedefleri kaldırıldı. Windows paketinde sistem Python fallback'i bulunmuyor.
 - **Uyumluluk:** Mevcut Wemos bağlantı/tarama davranışı, firmware ve kullanıcı ayarları korundu.
 
-### v1.6.4 (Güncel)
+### v1.6.4.2 (Güncel)
+- 🛠️ **Tepsi Başlangıcı:** Windows otomatik başlangıcında LuxEdge paneli göstermeden tepside çalışır; normal açılış ve tepsi menüsü paneli açar.
+- 🎨 **Doğru Bağlantı Göstergesi:** Bağlılık artık FPS veya gönderilen paketlerle değil, Wemos UDP `PONG` / HTTP `/status` yanıtıyla belirlenir. Yeşil, sarı, mavi, kırmızı ve gri durumlar yazı ile aynı kaynaktan güncellenir.
+- 🧪 **Sürüm ve Paket Doğrulaması:** Backend, Electron paketi ve NSIS kurulum dosyası aynı `1.6.4.2` sürümüyle yeniden oluşturulur ve kaynak eşleşmesi doğrulanır.
+
+### v1.6.4
 - 🛟 **Kademeli Wemos Kurtarma:** LED veri akışı kesildiğinde UDP soketi, Wi-Fi bağlantısı ve son çare olarak Wemos yeniden başlatması kontrollü aşamalarla uygulanır; yeniden başlatma döngüsü oluşmaz.
 - 📊 **Gelişmiş Cihaz Tanılama:** Wemos `/status` yanıtına RSSI, çalışma süresi, UDP durumu, son veri yaşı, kurtarma sayaçları ve reset sebebi eklendi.
 - 🔍 **Gerçek Bağlantı Doğrulaması:** PC uygulaması artık yalnız paket göndermeyi bağlantı kanıtı saymaz; Wemos'tan gelen UDP `PONG` veya HTTP `/status` yanıtını doğrular.
@@ -418,13 +426,15 @@ Kaynak kurulum adımlarından sonra:
 node --test tests/electron.test.js tests/monitors.test.js
 ```
 
-8 Ekim 2026 doğrulamasında **31 Python + 13 JavaScript testi (44 toplam)** geçti.
+10 Ekim 2026 doğrulamasında **42 Python + 23 JavaScript testi (65 toplam)** geçti.
 Testler yapay ekran görüntüleri, taklit ağ/süreç nesneleri ve geçici ayarlar kullanır;
 gerçek Wemos'a bağlanmaz, ekran yakalamaz veya kurulum çalıştırmaz.
 Renk ve LED sırası, tüm 0–255 parlaklık değerleri, monitör yenileme, gizli arayüz,
 süreç yönetimi ve paket içeriği kontrol edilmiştir.
 
-**Gerçek cihaz, ekran, oyun, canlı performans ve kurulum testleri henüz yapılmadı.**
+Paketli uygulama kontrollü yerel UDP cihazı ve gerçek Wemos üzerinde ayrıca kontrol edilmiştir. Gerçek Windows yeniden başlatma/oturum açma testi yapılmamıştır.
+
+`wemos_code/wemos_code.ino` içindeki `FIRMWARE_VERSION` hâlâ `1.6.4` olarak kalır; Wemos firmware'ini de `1.6.4.2` yapmak isterseniz bu dosyada **10. satırı** elle değiştirip Arduino ile yeniden derleyip flaşlamanız gerekir. Masaüstü paket sürümü değişince mevcut firmware otomatik güncellenmez.
 Windows takılmalarının giderildiği veya gerçek CPU/GPU yükünün azaldığı doğrulanmış değildir.
 
 - [Windows optimizasyonu ve doğrulama raporu](docs/WINDOWS_OPTIMIZATION.md)

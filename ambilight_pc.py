@@ -15,8 +15,10 @@ import logging.handlers
 from collections import deque
 from frame_processing import FrameCapture, edge_colors, edge_rgb, pack_rgb, solid_frame, frame_delay
 from monitor_catalog import MonitorCatalog
+from connectivity import Connectivity, legacy_connection
 
 monitor_catalog = MonitorCatalog()
+BACKEND_PORT = int(os.environ.get('LUXEDGE_BACKEND_PORT', '8888'))
 
 # Windows konsolunda emoji/Unicode desteği için encoding'i UTF-8'e ayarla.
 # PyInstaller --noconsole çalıştırmalarında stdout/stderr None olabilir.
@@ -1271,6 +1273,14 @@ app_status = {
     "actual_fps": 0
 }
 status_lock = threading.Lock()
+connectivity = Connectivity()
+
+
+def set_connection_target(ip, port, active=True, force=False):
+    with status_lock:
+        connectivity.reset(ip, port, active=active, force=force)
+        app_status['wemos_ip'] = ip
+        app_status['wemos_port'] = int(port)
 
 def update_status(key, value):
     """Thread-safe durum güncelleme"""
@@ -1280,7 +1290,10 @@ def update_status(key, value):
 def get_status():
     """Thread-safe durum okuma"""
     with status_lock:
-        return dict(app_status)
+        status = dict(app_status)
+        status['connectivity'] = connectivity.snapshot()
+        status['connection'] = legacy_connection(status['connectivity']['state'])
+        return status
 
 # ============================================================
 # WEB ARAYÜZÜ SUNUCUSU
@@ -1518,15 +1531,16 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
                 # Bulunan IP'yi config dosyasına kaydet
                 current_config = load_config() or {}
                 current_config["wemos_ip"] = found_ip
-                if save_config(current_config):
+                save_ok = save_config(current_config)
+                if save_ok:
                     print(f"[TARAMA] Wemos bulundu ve config'e kaydedildi: {found_ip}")
                     result["message"] = f"Wemos bulundu ve kaydedildi: {found_ip}"
                 else:
                     print(f"[TARAMA] Wemos bulundu ama config kaydedilemedi: {found_ip}")
                 
                 # Durum bilgisini hemen güncelle
-                update_status("wemos_ip", found_ip)
-                update_status("connection", "bağlanıyor")
+                if save_ok:
+                    set_connection_target(found_ip, current_config.get('wemos_port', 7777), active=running)
             else:
                 result["message"] = "Wemos ağda bulunamadı"
         except Exception as e:
@@ -1558,6 +1572,9 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
             current_config.update(filtered_config)
 
             if save_config(current_config):
+                if 'wemos_ip' in filtered_config or 'wemos_port' in filtered_config:
+                    set_connection_target(current_config.get('wemos_ip', ''),
+                                          current_config.get('wemos_port', 7777), active=running)
                 # Anında global bellek durumunu güncelle (UI senkronizasyon bug'ını çözer)
                 for k, v in filtered_config.items():
                     update_status(k, v)
@@ -1580,18 +1597,24 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
     def handle_test_wemos_connection(self):
         """Wemos bağlantı durumunu test eder (UDP + HTTP)"""
         try:
-            wemos_ip = get_status().get('wemos_ip')
-            wemos_port = get_status().get('wemos_port', 7777)
+            status = get_status()
+            wemos_ip = status.get('wemos_ip')
+            wemos_port = status.get('wemos_port', 7777)
 
             if not wemos_ip:
                 result = {"success": False, "message": "Wemos IP adresi ayarlanmamış", "udp_ok": False, "http_ok": False}
             else:
+                token = connectivity.begin(wemos_ip, wemos_port)
                 udp_ok, http_ok, message = test_wemos_connection(wemos_ip, wemos_port)
+                applied = connectivity.complete(token, udp_ok, http_ok)
                 result = {
                     "success": udp_ok or http_ok,
                     "message": message,
                     "udp_ok": udp_ok,
-                    "http_ok": http_ok
+                    "http_ok": http_ok,
+                    "applied": applied,
+                    "ip": wemos_ip,
+                    "port": wemos_port,
                 }
 
         except Exception as e:
@@ -1774,7 +1797,7 @@ def setup_tray_icon(config):
 def open_web_ui():
     """Web arayüzünü varsayılan tarayıcıda açar"""
     import webbrowser
-    webbrowser.open('http://localhost:8888')
+    webbrowser.open(f'http://localhost:{BACKEND_PORT}')
 
 # ============================================================
 # KONSOL YÖNETİMİ
@@ -1832,7 +1855,7 @@ def ping_wemos(ip, port=7777, timeout=3):
         # PONG yanıtını bekle
         data, addr = sock.recvfrom(64)
         sock.close()
-        return data == b"PONG"
+        return data == b"PONG" and addr == (ip, int(port))
     except Exception:
         try:
             sock.close()
@@ -1895,6 +1918,13 @@ def get_device_validation(device, timeout=2):
         "message": message,
     }
 
+def probe_wemos(ip, port=7777, full=False):
+    """None means HTTP was not tested, not that it failed."""
+    udp_ok = ping_wemos(ip, port=port, timeout=1.0)
+    http_ok = check_wemos_http(ip, timeout=1.5) if full or not udp_ok else None
+    return udp_ok, http_ok
+
+
 def test_wemos_connection(ip, port=7777):
     """
     Wemos'a bağlantı durumu test eder:
@@ -1902,8 +1932,7 @@ def test_wemos_connection(ip, port=7777):
     - HTTP /status endpoint kontrolü (port 80)
     Returns tuple (udp_ok, http_ok, message)
     """
-    udp_ok = ping_wemos(ip, port=port, timeout=3)
-    http_ok = check_wemos_http(ip, timeout=2)
+    udp_ok, http_ok = probe_wemos(ip, port, full=True)
 
     if udp_ok and http_ok:
         return True, True, f"✅ Her iki protokol da çalışıyor ({ip}:{port}, http://{ip}/status)"
@@ -1915,85 +1944,27 @@ def test_wemos_connection(ip, port=7777):
         return False, False, f"❌ Wemos'a bağlanılamıyor ({ip}:{port})"
 
 def wemos_connectivity_checker(ip, port, cancel_event=None):
-    """
-    Arka planda Wemos'un erişilebilir olup olmadığını kontrol eder.
-    Bağlantı yalnız Wemos'tan alınan UDP PONG veya HTTP /status yanıtıyla
-    doğrulanır. PC'nin paket göndermesi cihazın paketi aldığını kanıtlamaz.
-    """
-    global running
-    consecutive_fails = 0
-    consecutive_successes = 0
-    MAX_FAILS = 3
-    MIN_SUCCESS = 1
-    was_connected = False
-    last_status_change = 0.0
-    DEBOUNCE_SEC = 3.0
-
-    log.info(f"[BAĞLANTI] Connectivity checker başlatıldı (Hedef: {ip}:{port})")
-
-    # İlk birkaç saniye bekle, worker başlasın
-    for _ in range(30):
-        if not running or (cancel_event and cancel_event.is_set()):
+    """Probe the current target; canceled/obsolete results cannot publish."""
+    cancel = cancel_event or threading.Event()
+    while running and not cancel.is_set():
+        token = connectivity.begin(ip, port)
+        if token is None:
             return
-        time.sleep(0.1)
-
-    log.info(f"[BAĞLANTI] İlk kontrol yapılıyor... (Port {port})")
-
-    while running and (cancel_event is None or not cancel_event.is_set()):
+        previous = connectivity.snapshot()['state']
         try:
-            # FPS ve gönderilen paketler yalnız tanılama içindir; erişilebilirlik
-            # kararı Wemos'un verdiği gerçek yanıta dayanır.
-            status = get_status()
-            actual_fps = status.get('actual_fps', 0)
-            packets_sent = status.get('packets_sent', 0)
+            udp_ok, http_ok = probe_wemos(ip, port)
+        except Exception as error:
+            log.warning(f'[BAĞLANTI] Kontrol hatası ({ip}:{port}): {error}')
+            udp_ok, http_ok = False, False
+        if not running or cancel.is_set():
+            return
+        if connectivity.complete(token, udp_ok, http_ok):
+            current = connectivity.snapshot()['state']
+            if current != previous:
+                log.info(f'[BAĞLANTI] {ip}:{port}: {previous} -> {current}')
+        if cancel.wait(3):
+            return
 
-            udp_ok = ping_wemos(ip, port=port, timeout=1.0)
-            http_ok = check_wemos_http(ip, timeout=1.5) if not udp_ok else False
-            wemos_reachable = udp_ok or http_ok
-
-            if wemos_reachable:
-                consecutive_fails = 0
-                consecutive_successes += 1
-                if not was_connected and consecutive_successes >= MIN_SUCCESS:
-                    now = time.time()
-                    if now - last_status_change >= DEBOUNCE_SEC:
-                        reason = "UDP PONG" if udp_ok else "HTTP /status"
-                        log.info(
-                            f"[BAĞLANTI] ✅ Wemos doğrulandı ({ip}:{port}) - "
-                            f"yanıt: {reason}, PC FPS: {actual_fps}, gönderilen paket: {packets_sent}"
-                        )
-                        was_connected = True
-                        last_status_change = now
-                        update_status("connection", "bağlı")
-                elif was_connected:
-                    update_status("connection", "bağlı")
-            else:
-                consecutive_successes = 0
-                consecutive_fails += 1
-                if consecutive_fails < MAX_FAILS:
-                    log.warning(f"[BAĞLANTI] Wemos yanıt vermedi (deneme {consecutive_fails}/{MAX_FAILS})")
-                if consecutive_fails >= MAX_FAILS:
-                    now = time.time()
-                    if was_connected and now - last_status_change >= DEBOUNCE_SEC:
-                        log.warning(f"[BAĞLANTI] ❌ Wemos bağlantısı kesildi ({ip}:{port})")
-                        was_connected = False
-                        last_status_change = now
-                        update_status("connection", "bağlı değil")
-                    elif not was_connected:
-                        update_status("connection", "bağlı değil")
-        except Exception as e:
-            consecutive_successes = 0
-            consecutive_fails += 1
-            log.error(f"[BAĞLANTI] Kontrol hatası ({ip}:{port}): {e}")
-            if consecutive_fails >= MAX_FAILS:
-                was_connected = False
-                update_status("connection", "bağlı değil")
-
-        # 3 saniyede bir kontrol et
-        for _ in range(30):
-            if not running or (cancel_event and cancel_event.is_set()):
-                return
-            time.sleep(0.1)
 
 def ambilight_worker(config):
     """Ambilight'i arka planda çalıştıran thread fonksiyonu"""
@@ -2036,7 +2007,7 @@ def ambilight_worker(config):
     update_status("fullscreen_max_brightness", FULLSCREEN_MAX_BRIGHTNESS)
     update_status("running", True)
     update_status("uptime_start", time.time())
-    update_status("connection", "bağlanıyor" if WEMOS_IP else "IP Bekleniyor...")
+    set_connection_target(WEMOS_IP, WEMOS_PORT, force=True)
     
     local_ip = get_local_ip()
     if local_ip:
@@ -2190,23 +2161,20 @@ def ambilight_worker(config):
                         log.info(f"[CONFIG] Hedef LED monitörü güncellendi: {led_idx}")
 
                     new_ip = new_config.get("wemos_ip", "")
-                    if new_ip and new_ip != WEMOS_IP:
-                        print(f"✓ (Worker) IP değişti: '{WEMOS_IP}' → '{new_ip}'")
-                        WEMOS_IP = new_ip
-                        update_status("wemos_ip", WEMOS_IP)
-                        update_status("connection", "bağlanıyor")
-                        
-                        # Eski connectivity thread'ini iptal et ve yenisini başlat
+                    new_port = int(new_config.get("wemos_port", 7777))
+                    if (new_ip, new_port) != (WEMOS_IP, WEMOS_PORT):
+                        WEMOS_IP, WEMOS_PORT = new_ip, new_port
                         if connectivity_cancel:
                             connectivity_cancel.set()
-                        time.sleep(0.5)  # Eski thread'in durmasını bekle
-                        connectivity_cancel = threading.Event()  # Yeni event
-                        connectivity_thread = threading.Thread(
-                            target=wemos_connectivity_checker,
-                            args=(WEMOS_IP, WEMOS_PORT, connectivity_cancel),
-                            daemon=True
-                        )
-                        connectivity_thread.start()
+                        set_connection_target(WEMOS_IP, WEMOS_PORT)
+                        connectivity_cancel = threading.Event()
+                        if WEMOS_IP:
+                            connectivity_thread = threading.Thread(
+                                target=wemos_connectivity_checker,
+                                args=(WEMOS_IP, WEMOS_PORT, connectivity_cancel),
+                                daemon=True
+                            )
+                            connectivity_thread.start()
 
                     # Compatibility field: diagnostics must not capture unused screens.
                     update_status("shadow_device_frames", [])
@@ -2304,7 +2272,9 @@ def ambilight_worker(config):
             except (AttributeError, OSError):
                 pass
         update_status("running", False)
-        update_status("connection", "kapalı")
+        if connectivity_cancel:
+            connectivity_cancel.set()
+        set_connection_target(WEMOS_IP, WEMOS_PORT, active=False)
         if sock:
             sock.close()
         if sct:
@@ -2320,7 +2290,7 @@ def main():
     monitor_catalog.refresh(get_available_monitors)
     
     print("\n" + "="*60)
-    print("  AMBILIGHT PC v1.6.4 - Windows")
+    print("  AMBILIGHT PC v1.6.4.2 - Windows")
     print("="*60)
     
     # Konfigürasyonu yükle
@@ -2392,9 +2362,9 @@ def main():
     
     # Web UI sunucusunu başlat
     print(f"\n{'='*60}")
-    web_server = start_web_server(8888)
+    web_server = start_web_server(BACKEND_PORT)
     if web_server:
-        print(f"🌐 Web Arayüzü: http://localhost:8888")
+        print(f"🌐 Web Arayüzü: http://localhost:{BACKEND_PORT}")
     print(f"{'='*60}\n")
     
     # NOT: Otomatik başlatma sadece Electron tarafından ilk kurulumda ayarlanır.
@@ -2421,7 +2391,7 @@ def _run_console_mode(config, total_leds, wemos_ip, wemos_port, fps):
     global running
     
     print("Ambilight çalışıyor... Ctrl+C ile kapatabilirsiniz.")
-    print(f"Web Arayüzü: http://localhost:8888\n")
+    print(f"Web Arayüzü: http://localhost:{BACKEND_PORT}\n")
     
     try:
         while running:

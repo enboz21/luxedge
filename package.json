@@ -1,6 +1,7 @@
 {
     "name": "luxedge",
     "version": "1.6.4",
+    "luxedgeVersion": "1.6.4.2",
     "description": "LuxEdge - DIY Ambilight System for Monitor Backlighting",
     "author": {
         "name": "enboz",
@@ -15,6 +16,7 @@
     "build": {
         "appId": "com.luxedge.app",
         "productName": "LuxEdge",
+        "artifactName": "LuxEdge Setup 1.6.4.2.${ext}",
         "files": [
             "main.js",
             "preload.js",

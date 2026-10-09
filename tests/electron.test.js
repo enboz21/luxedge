@@ -6,9 +6,25 @@ const vm = require('node:vm');
 const { EventEmitter } = require('node:events');
 const { createPoller } = require('../web_ui/polling');
 
-function fixture(owns = true) {
+function fixture(owns = true, options = {}) {
     const app = new EventEmitter();
     const calls = [];
+    const windows = [], trays = [], loginWrites = [], loginReads = [], handlers = new Map();
+    class Window extends EventEmitter {
+        constructor(settings) { super(); this.settings = settings; this.visible = false; this.webContents = { send() {} }; windows.push(this); }
+        loadFile() {}
+        isVisible() { return this.visible; }
+        isMinimized() { return false; }
+        show() { this.visible = true; }
+        hide() { this.visible = false; }
+        focus() { this.focused = true; }
+        static getAllWindows() { return windows; }
+    }
+    class Tray extends EventEmitter {
+        constructor() { super(); if (options.trayFails) throw new Error('No tray'); trays.push(this); }
+        setToolTip() {}
+        setContextMenu(menu) { this.menu = menu; }
+    }
     let readyCalls = 0;
     Object.assign(app, {
         requestSingleInstanceLock: () => owns,
@@ -16,14 +32,27 @@ function fixture(owns = true) {
         quit: () => calls.push('quit'),
         exit: () => calls.push('exit'),
         relaunch: () => calls.push('relaunch'),
+        isPackaged: options.packaged ?? true,
+        getPath: () => 'C:\\LuxEdge\\LuxEdge.exe',
+        getLoginItemSettings: settings => {
+            loginReads.push(settings);
+            return { openAtLogin: settings.args.length ? !!options.current : !!options.legacy,
+                executableWillLaunchAtLogin: options.approved !== false };
+        },
+        setLoginItemSettings: settings => loginWrites.push(settings),
     });
     const timers = new Map();
     const spawned = [];
     const processMock = new EventEmitter();
     processMock.env = {};
+    processMock.argv = options.argv || [];
+    processMock.resourcesPath = path.resolve(__dirname, '..');
     const context = vm.createContext({
         require(name) {
-            if (name === 'electron') return { app };
+            if (name === 'electron') return { app, BrowserWindow: Window, Tray,
+                Menu: { buildFromTemplate: template => template },
+                nativeImage: { createFromBitmap: () => ({}) },
+                ipcMain: { handle: (name, handler) => handlers.set(name, handler) } };
             if (name === 'child_process') return { spawn: (...args) => {
                 const proc = new EventEmitter();
                 proc.stdout = new EventEmitter();
@@ -46,7 +75,7 @@ function fixture(owns = true) {
     const baseRequire = context.require;
     context.require = name => name === 'http' ? new Proxy({}, { get() { throw new Error('Network forbidden'); } }) : baseRequire(name);
     vm.runInContext(fs.readFileSync(path.join(__dirname, '../main.js'), 'utf8'), context);
-    return { app, context, calls, spawned, timers, readyCalls };
+    return { app, context, calls, spawned, timers, readyCalls, windows, trays, loginWrites, loginReads, handlers };
 }
 
 test('second application never starts backend or readiness work', () => {
@@ -171,4 +200,65 @@ test('renderer and preload agree on visibility bridge and scripts parse', () => 
     assert.match(preload, /onWindowVisibility/);
     assert.match(html, /window\.luxedge\.onWindowVisibility/);
     for (const match of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) new vm.Script(match[1]);
+});
+
+for (const hidden of [false, true]) {
+    test('window ready respects tray startup: ' + hidden, () => {
+        const f = fixture(true, { argv: hidden ? ['--start-in-tray'] : [] });
+        vm.runInContext('createTray(); createWindow()', f.context);
+        assert.equal(f.windows[0].settings.show, false);
+        f.windows[0].emit('ready-to-show');
+        assert.equal(f.windows[0].visible, !hidden);
+        f.trays[0].emit('double-click');
+        assert.equal(f.windows[0].visible, true);
+        f.windows[0].hide();
+        f.trays[0].menu[0].click();
+        assert.equal(f.windows[0].visible, true);
+    });
+}
+
+test('tray failure exposes the hidden-start window', () => {
+    const f = fixture(true, { argv: ['--start-in-tray'], trayFails: true });
+    vm.runInContext('createTray(); createWindow()', f.context);
+    f.windows[0].emit('ready-to-show');
+    assert.equal(f.windows[0].visible, true);
+});
+
+test('automatic second launch stays hidden; manual launch before ready is remembered', () => {
+    const f = fixture(true, { argv: ['--start-in-tray'] });
+    f.app.emit('second-instance', {}, ['LuxEdge.exe', '--start-in-tray']);
+    assert.equal(vm.runInContext('showOnReady', f.context), false);
+    f.app.emit('second-instance', {}, ['LuxEdge.exe']);
+    vm.runInContext('createTray(); createWindow()', f.context);
+    f.windows[0].emit('ready-to-show');
+    assert.equal(f.windows[0].visible, true);
+    f.windows[0].hide();
+    f.app.emit('second-instance', {}, ['LuxEdge.exe', '--start-in-tray']);
+    assert.equal(f.windows[0].visible, false);
+});
+
+test('only enabled legacy startup entries migrate', () => {
+    for (const opts of [{legacy:true}, {}, {current:true}, {legacy:true,approved:false}, {legacy:true,packaged:false}]) {
+        const f = fixture(true, opts);
+        vm.runInContext('migrateAutostart()', f.context);
+        const expected = opts.legacy && opts.approved !== false && opts.packaged !== false ? 1 : 0;
+        assert.equal(f.loginWrites.length, expected);
+        if (expected) {
+            assert.deepEqual(Array.from(f.loginWrites[0].args), ['--start-in-tray']);
+            assert.equal(f.loginWrites[0].openAtLogin, true);
+        }
+    }
+});
+
+test('autostart read and write use the same executable and arguments', () => {
+    const f = fixture(true, {current:true});
+    vm.runInContext('registerIpcHandlers()', f.context);
+    assert.equal(f.handlers.get('get-autostart')().enabled, true);
+    for (const enabled of [true,false]) {
+        assert.equal(f.handlers.get('set-autostart')({}, enabled).success, true);
+        const written = f.loginWrites.at(-1);
+        assert.equal(written.openAtLogin, enabled);
+        assert.deepEqual(Array.from(written.args), Array.from(f.loginReads[0].args));
+        assert.equal(written.path, f.loginReads[0].path);
+    }
 });

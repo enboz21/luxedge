@@ -14,7 +14,34 @@ let pythonProcess;
 let tray = null;
 let shutdownPromise = null;
 const ownsInstance = app.requestSingleInstanceLock();
-const PYTHON_PORT = 8888;
+const PYTHON_PORT = Number(process.env.LUXEDGE_BACKEND_PORT || 8888);
+const START_IN_TRAY = '--start-in-tray';
+let showOnReady = !(process.argv || []).includes(START_IN_TRAY);
+
+function loginOptions(args = [START_IN_TRAY]) {
+    return { path: app.getPath('exe'), args };
+}
+
+function autostartEnabled() {
+    const settings = app.getLoginItemSettings(loginOptions());
+    return settings.openAtLogin && settings.executableWillLaunchAtLogin !== false;
+}
+
+function migrateAutostart() {
+    if (!app.isPackaged) return;
+    const legacy = app.getLoginItemSettings(loginOptions([]));
+    if (legacy.openAtLogin && legacy.executableWillLaunchAtLogin !== false) {
+        app.setLoginItemSettings({ ...loginOptions(), openAtLogin: true });
+    }
+}
+
+function showControlPanel() {
+    showOnReady = true;
+    if (!mainWindow) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+}
 
 // ============================================================
 // PYTHON HTTP İSTEKLERİ
@@ -233,7 +260,9 @@ function createWindow() {
     }
     mainWindow.loadFile(path.join(__dirname, 'web_ui', 'index.html'));
 
-    mainWindow.once('ready-to-show', () => mainWindow.show());
+    mainWindow.once('ready-to-show', () => {
+        if (showOnReady || !tray) showControlPanel();
+    });
 
     // X butonuna basılınca tepsiye küçült
     mainWindow.on('close', (event) => {
@@ -265,7 +294,7 @@ function createTray() {
             }
         }
 
-        const icon = nativeImage.createFromBuffer(buf, { width: size, height: size });
+        const icon = nativeImage.createFromBitmap(buf, { width: size, height: size });
         tray = new Tray(icon);
     } catch (e) {
         console.warn('[LuxEdge] Tepsi ikonu oluşturulamadı:', e.message);
@@ -276,8 +305,8 @@ function createTray() {
         {
             label: '🖥️ LuxEdge Kontrol Paneli',
             click: () => {
-                if (mainWindow) { mainWindow.show(); mainWindow.focus(); }
-                else createWindow();
+                showControlPanel();
+                if (!mainWindow) createWindow();
             }
         },
         { type: 'separator' },
@@ -293,9 +322,7 @@ function createTray() {
 
     tray.setToolTip('LuxEdge - Çalışıyor');
     tray.setContextMenu(contextMenu);
-    tray.on('double-click', () => {
-        if (mainWindow) { mainWindow.show(); mainWindow.focus(); }
-    });
+    tray.on('double-click', showControlPanel);
 }
 
 function hslToRgb(h, s, l) {
@@ -328,8 +355,9 @@ function registerIpcHandlers() {
         catch (error) { return { success: false, message: 'Monitör listesi güncellenemedi.' }; }
     });
     ipcMain.handle('get-status', async () => {
-        try { return await pythonGet('/api/status', 2000); }
-        catch (e) { return { connection: 'bağlantı yok', running: false, last_error: "Python sunucusuna erişilemiyor..." }; }
+        // The backend also serves the bounded manual UDP/HTTP test on this server.
+        try { return await pythonGet('/api/status', 7000); }
+        catch (e) { return { connection: 'bağlantı yok', connectivity: { state: 'backend_unavailable' }, running: false, last_error: "Python sunucusuna erişilemiyor..." }; }
     });
 
     ipcMain.handle('scan-network', async () => {
@@ -383,7 +411,7 @@ function registerIpcHandlers() {
     });
 
     ipcMain.handle('test-wemos-connection', async () => {
-        try { return await pythonGet('/api/test-wemos-connection', 5000); }
+        try { return await pythonGet('/api/test-wemos-connection', 7000); }
         catch (e) { return { success: false, message: "Test başarısız", udp_ok: false, http_ok: false }; }
     });
 
@@ -408,10 +436,10 @@ function registerIpcHandlers() {
     });
 
     // Otomatik Başlatma (Sadece Electron — backend'i Electron başlatır)
-    ipcMain.handle('get-autostart', () => ({ enabled: app.getLoginItemSettings().openAtLogin }));
+    ipcMain.handle('get-autostart', () => ({ enabled: autostartEnabled() }));
     ipcMain.handle('set-autostart', (event, enabled) => {
         try {
-            app.setLoginItemSettings({ openAtLogin: enabled, path: app.getPath('exe'), args: [] });
+            app.setLoginItemSettings({ ...loginOptions(), openAtLogin: enabled });
             return { success: true, enabled };
         } catch (error) { return { success: false, message: error.message }; }
     });
@@ -432,29 +460,25 @@ function registerIpcHandlers() {
 if (!ownsInstance) {
     app.quit();
 } else {
-app.on('second-instance', () => {
-    if (mainWindow) {
-        if (mainWindow.isMinimized()) mainWindow.restore();
-        mainWindow.show();
-        mainWindow.focus();
-    }
+app.on('second-instance', (event, argv = []) => {
+    if (!argv.includes(START_IN_TRAY)) showControlPanel();
 });
 app.whenReady().then(async () => {
     console.log('[LuxEdge] Başlatılıyor...');
 
     // Otomatik başlatma durumunu logla
-    const loginSettings = app.getLoginItemSettings();
-    console.log(`[LuxEdge] Otomatik başlatma: ${loginSettings.openAtLogin ? 'AÇIK' : 'KAPALI'}`);
+    try { migrateAutostart(); }
+    catch (error) { console.warn('[LuxEdge] Başlangıç kaydı güncellenemedi:', error.message); }
 
     registerIpcHandlers();
     await startPython();
     if (app.isQuitting) return;
-    createWindow();
     createTray();
+    createWindow();
 
     app.on('activate', () => {
+        showControlPanel();
         if (BrowserWindow.getAllWindows().length === 0) createWindow();
-        else if (mainWindow) mainWindow.show();
     });
 });
 

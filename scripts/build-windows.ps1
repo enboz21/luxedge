@@ -14,7 +14,7 @@ try {
     $packagedHash = (Get-FileHash -LiteralPath 'dist\win-unpacked\resources\lush_backend.exe' -Algorithm SHA256).Hash
     if ($builtHash -ne $packagedHash) { throw 'Packaged backend hash mismatch' }
     if (Test-Path -LiteralPath 'dist\win-unpacked\resources\lush_backend') { throw 'Unexpected Linux backend in Windows package' }
-    $version = (Get-Content -LiteralPath 'package.json' -Raw | ConvertFrom-Json).version
+    $version = (Get-Content -LiteralPath 'package.json' -Raw | ConvertFrom-Json).luxedgeVersion
     Get-Item -LiteralPath "dist\LuxEdge Setup $version.exe" | Select-Object FullName, Length
     Write-Output "Verified backend SHA256: $builtHash"
 } finally {

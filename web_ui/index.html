@@ -237,6 +237,11 @@
             animation: statusPulse 1s ease-in-out infinite;
         }
 
+        .status-dot.neutral {
+            background-color: var(--text-muted);
+            box-shadow: none;
+        }
+
         @keyframes statusPulse {
             0%, 100% { opacity: 1; transform: scale(1); }
             50% { opacity: 0.4; transform: scale(0.85); }
@@ -769,7 +774,7 @@
                     </a>
                 </div>
                 <div style="font-size: 11px; color: var(--text-muted); margin-top: 15px; text-align: center;">
-                    Versiyon 1.6.4
+                    Versiyon 1.6.4.2
                 </div>
             </div>
         </div>
@@ -1091,7 +1096,7 @@
                     </div>
                     <div style="display: flex; align-items: center; gap: 15px;">
                         <label class="toggle-switch"
-                            title="Bilgisayar açıldığında LuxEdge'i otomatik olarak başlatır. Sadece Electron uygulaması başlar, backend otomatik başlatılır.">
+                            title="Bilgisayar açıldığında LuxEdge'i sistem tepsisinde başlatır.">
                             <input type="checkbox" id="autostart_toggle">
                             <span class="toggle-slider"></span>
                         </label>
@@ -1101,7 +1106,7 @@
                                 Bilgisayar Açıldığında Otomatik Başlat
                             </label>
                             <p style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">
-                                Sistem başlangıcında LuxEdge otomatik olarak açılır ve Ambilight'ı başlatır.
+                                Sistem başlangıcında LuxEdge tepside çalışır ve Ambilight'ı başlatır. Paneli tepsi simgesinden açabilirsiniz.
                             </p>
                         </div>
                     </div>
@@ -1133,6 +1138,7 @@
 
     <script src="polling.js"></script>
     <script src="monitors.js"></script>
+    <script src="connection.js"></script>
     <script>
         let electronVisible = true;
         const poller = createPoller(() => !document.hidden && electronVisible);
@@ -1511,7 +1517,7 @@
                 const status = await api.getStatus();
                 updateUI(status);
             } catch (error) {
-                updateConnectionUI('Bağlantı Yok', false);
+                renderConnection(els, { connectivity: { state: 'backend_unavailable' } });
             }
         }
 
@@ -1525,48 +1531,8 @@
         }
 
         // --- Status Update ---
-        // Bağlantı debounce: anlık geçişleri yumuşat
-        let _lastConnStatus = null;
-        let _connDebounceTimer = null;
-
-        function setConnectionStatus(isConnected, isRunning, udpOk = false, httpOk = false) {
-            // Determine status for status dot
-            let dotClass = 'status-dot';
-            let statusText = 'Sistem Aktif';
-
-            if (!isConnected) {
-                if (udpOk && !httpOk) {
-                    dotClass = 'status-dot'; // UDP only - LED veri akışı için bağlı sayılır
-                    statusText = 'UDP ile bağlı (HTTP kopuk)';
-                } else if (!udpOk && httpOk) {
-                    dotClass = 'status-dot warning'; // HTTP only
-                    statusText = 'HTTP ile bağlı (UDP kopuk)';
-                } else if (!udpOk && !httpOk) {
-                    dotClass = 'status-dot'; // Both failed
-                    statusText = 'Bağlantı yok';
-                }
-            } else {
-                if (udpOk && httpOk) {
-                    dotClass = 'status-dot active'; // Both working
-                    statusText = 'Tam bağlantı (UDP + HTTP)';
-                } else if (udpOk) {
-                    dotClass = 'status-dot warning'; // UDP only
-                    statusText = 'UDP bağlantısı aktif';
-                } else {
-                    dotClass = 'status-dot'; // Should not happen but just in case
-                    statusText = 'HTTP ile bağlı';
-                }
-            }
-
-            const newStatus = isConnected ? 'connected' : (isRunning ? 'searching' : 'stopped');
-            if (newStatus === _lastConnStatus) return; // Değişim yoksa dokunma
-            clearTimeout(_connDebounceTimer);
-            _connDebounceTimer = setTimeout(() => {
-                _lastConnStatus = newStatus;
-                els.statusDot.className = dotClass;
-                els.statusText.textContent = statusText;
-            }, isConnected ? 500 : 2000); // Bağlanma hızlı, kopma yavaş (titreme önleme)
-        }
+        let connectionTarget = '';
+        let connectionTestRequest = 0;
 
         function updateFpsColor(fps, targetFps = 60) {
             const circle = document.querySelector('.stat-circle');
@@ -1588,18 +1554,13 @@
         function updateUI(status) {
             applyMonitorSnapshot(status);
 
-            // Bağlantı Durumu — FPS > 0 ise paketler gönderiliyor = bağlı
-            const isSendingData = status.actual_fps && status.actual_fps > 0;
-            const isConnected = status.connection === 'bağlı' || isSendingData;
-            const isRunning = status.running;
-
-            // UDP/HTTP durumundan çıkarılan ayrıntılı bilgi (connText'e dahil edilmez, test butonunda gösterilir)
-            setConnectionStatus(isConnected, isRunning);
-
-            // Bağlantı kartındaki durum yazısı
-            const connText = isConnected ? 'bağlı' : (status.connection || 'Bilinmiyor');
-            els.connStatus.textContent = connText;
-            els.connStatus.style.color = isConnected ? 'var(--success-color)' : 'var(--text-secondary)';
+            renderConnection(els, status);
+            const target = JSON.stringify([status.wemos_ip || '', status.wemos_port || 7777]);
+            if (target !== connectionTarget) {
+                connectionTarget = target;
+                connectionTestRequest++;
+                document.getElementById('connection-test-details').classList.remove('show');
+            }
 
             els.wemosIp.textContent = status.wemos_ip || '-';
             els.wemosPort.textContent = status.wemos_port || '-';
@@ -1674,32 +1635,6 @@
             }
         }  // updateUI sonu
 
-        function updateConnectionUI(msg, connected, udpOk = false, httpOk = false) {
-            clearTimeout(_connDebounceTimer);
-            _lastConnStatus = null; // Zorla sıfırla
-            els.statusDot.className = 'status-dot';
-            els.statusText.textContent = msg;
-
-            // Get current status for detailed connection info
-            const currentStatus = els.connStatus.textContent;
-            const isSendingData = els.fpsVal && parseFloat(els.fpsVal.textContent) > 0;
-
-            // UDP-only bağlantı durumunu göster
-            if (udpOk && !httpOk) {
-                els.connStatus.textContent = 'UDP ile bağlı';
-                els.connStatus.style.color = 'var(--warning-color)';
-            } else if (!udpOk && httpOk) {
-                els.connStatus.textContent = 'HTTP ile bağlı';
-                els.connStatus.style.color = 'var(--success-color)';
-            } else if (connected || isSendingData) {
-                els.connStatus.textContent = 'bağlı';
-                els.connStatus.style.color = 'var(--success-color)';
-            } else {
-                els.connStatus.textContent = 'Bağlantı Yok';
-                els.connStatus.style.color = 'var(--danger-color)';
-            }
-        }
-
         // --- Bağlantı Testi ---
         async function testWemosConnection() {
             const details = document.getElementById('connection-test-details');
@@ -1709,6 +1644,7 @@
 
             if (!details) return;
             details.classList.add('show');
+            const request = ++connectionTestRequest;
 
             // Sıfırla
             udpEl.className = 'test-value checking';
@@ -1719,6 +1655,7 @@
 
             try {
                 const result = await api.testWemosConnection();
+                if (request !== connectionTestRequest) return;
                 const udpOk = result.udp_ok;
                 const httpOk = result.http_ok;
                 const msg = result.message || '';
@@ -1731,19 +1668,17 @@
 
                 msgEl.textContent = msg;
 
-                // Genel bağlantı durumunu güncelle
-                if (udpOk || httpOk) {
-                    updateConnectionUI('Bağlı', true, udpOk, httpOk);
-                } else {
-                    updateConnectionUI('Bağlantı yok', false, udpOk, httpOk);
-                }
+                // Only /api/status owns the main indicator; a test response can be stale.
+                if (result.applied === false) msgEl.textContent = 'Test sonucu güncelliğini yitirdi; güncel durum kontrol ediliyor.';
+                await fetchStatus();
             } catch (e) {
+                if (request !== connectionTestRequest) return;
                 udpEl.className = 'test-value fail';
                 udpEl.textContent = '❌ Başarısız';
                 httpEl.className = 'test-value fail';
                 httpEl.textContent = '❌ Başarısız';
                 msgEl.textContent = 'Test hatası: ' + e.message;
-                updateConnectionUI('Test hatası', false, false, false);
+                await fetchStatus();
             }
         }
 
