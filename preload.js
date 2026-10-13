@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld('luxedge', {
     createDevice: (device) => ipcRenderer.invoke('create-device', device),
     updateDevice: (id, device) => ipcRenderer.invoke('update-device', id, device),
     deleteDevice: (id) => ipcRenderer.invoke('delete-device', id),
+    syncDevice: (id, options) => ipcRenderer.invoke('sync-device', id, options),
 
     // Uygulama
     restartApp: () => ipcRenderer.invoke('restart-app'),

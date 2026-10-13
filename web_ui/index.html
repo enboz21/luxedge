@@ -4,1945 +4,430 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LuxEdge - Ambilight Kontrol Paneli</title>
-    <meta name="description" content="LuxEdge - Gelişmiş Ambilight Kontrol Sistemi">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <style>
-        :root {
-            /* Renk Paleti (Modern & Koyu Tema) */
-            --bg-body: #0a0c10;
-            --bg-sidebar: #0d1117;
-            --bg-card: #161b22;
-            --bg-card-hover: #21262d;
-            --border-color: #30363d;
-
-            --text-primary: #f0f6fc;
-            --text-secondary: #8b949e;
-            --text-muted: #6e7681;
-
-            --accent-color: #58a6ff;
-            --accent-hover: #1f6feb;
-            --accent-glow: rgba(56, 139, 253, 0.15);
-
-            --success-color: #238636;
-            --warning-color: #d29922;
-            --danger-color: #da3633;
-
-            /* Boyutlar & Boşluklar */
-            --titlebar-height: 32px;
-            --sidebar-width: 240px;
-            --radius-md: 6px;
-            --radius-lg: 12px;
-
-            /* Animasyonlar */
-            --transition-speed: 0.2s;
-        }
-
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-            user-select: none;
-            /* Masaüstü uygulaması hissi */
-        }
-
-        body {
-            font-family: 'Inter', system-ui, -apple-system, sans-serif;
-            background-color: var(--bg-body);
-            color: var(--text-primary);
-            overflow: hidden;
-            /* Scrollbar'ı gizle */
-            height: 100vh;
-            display: flex;
-            flex-direction: column;
-        }
-
-        /* ---------------------------------------------------------
-           TITLEBAR (Başlık Çubuğu)
-           --------------------------------------------------------- */
-        .titlebar {
-            height: var(--titlebar-height);
-            background-color: var(--bg-sidebar);
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 0 10px;
-            border-bottom: 1px solid var(--border-color);
-            -webkit-app-region: drag;
-            /* Sürüklenebilir alan */
-            z-index: 1000;
-        }
-
-        .app-logo {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            font-size: 13px;
-            font-weight: 600;
-            color: var(--text-secondary);
-        }
-
-        .drag-area {
-            flex-grow: 1;
-            height: 100%;
-        }
-
-        .window-controls {
-            display: flex;
-            -webkit-app-region: no-drag;
-            /* Butonlar tıklanabilir olmalı */
-        }
-
-        .control-btn {
-            background: none;
-            border: none;
-            color: var(--text-secondary);
-            width: 40px;
-            height: var(--titlebar-height);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            cursor: pointer;
-            transition: background-color 0.1s;
-        }
-
-        .control-btn:hover {
-            background-color: var(--bg-card-hover);
-            color: var(--text-primary);
-        }
-
-        .control-btn.close:hover {
-            background-color: var(--danger-color);
-            color: white;
-        }
-
-        /* ---------------------------------------------------------
-           LAYOUT (Genel Düzen)
-           --------------------------------------------------------- */
-        .app-container {
-            display: flex;
-            height: calc(100vh - var(--titlebar-height));
-        }
-
-        /* ---------------------------------------------------------
-           SIDEBAR (Kenar Çubuğu)
-           --------------------------------------------------------- */
-        .sidebar {
-            width: var(--sidebar-width);
-            background-color: var(--bg-sidebar);
-            border-right: 1px solid var(--border-color);
-            display: flex;
-            flex-direction: column;
-            padding: 20px;
-            gap: 20px;
-        }
-
-        .sidebar-header h2 {
-            font-size: 18px;
-            font-weight: 700;
-            color: var(--text-primary);
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-
-        .nav-menu {
-            display: flex;
-            flex-direction: column;
-            gap: 5px;
-        }
-
-        .nav-item {
-            padding: 10px 12px;
-            border-radius: var(--radius-md);
-            color: var(--text-secondary);
-            text-decoration: none;
-            font-size: 14px;
-            font-weight: 500;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            transition: all var(--transition-speed);
-            cursor: pointer;
-        }
-
-        .nav-item:hover {
-            background-color: var(--bg-card);
-            color: var(--text-primary);
-        }
-
-        .nav-item.active {
-            background-color: var(--bg-card-hover);
-            color: var(--accent-color);
-            border-left: 3px solid var(--accent-color);
-        }
-
-        .sidebar-footer {
-            margin-top: auto;
-            border-top: 1px solid var(--border-color);
-            padding-top: 20px;
-        }
-
-        /* ---------------------------------------------------------
-           MAIN CONTENT (Ana İçerik)
-           --------------------------------------------------------- */
-        .main-content {
-            flex-grow: 1;
-            padding: 30px;
-            overflow-y: auto;
-            background-color: var(--bg-body);
-        }
-
-        /* Status Header */
-        .status-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 30px;
-        }
-
-        .status-badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            padding: 6px 16px;
-            border-radius: 20px;
-            font-size: 13px;
-            font-weight: 600;
-            background-color: var(--bg-card);
-            border: 1px solid var(--border-color);
-        }
-
-        .status-dot {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background-color: var(--danger-color);
-            box-shadow: 0 0 8px var(--danger-color);
-        }
-
-        .status-dot.active {
-            background-color: var(--success-color);
-            box-shadow: 0 0 8px var(--success-color);
-        }
-
-        .status-dot.warning {
-            background-color: var(--warning-color);
-            box-shadow: 0 0 8px var(--warning-color);
-        }
-
-        .status-dot.checking {
-            background-color: var(--accent-color);
-            box-shadow: 0 0 8px var(--accent-color);
-            animation: statusPulse 1s ease-in-out infinite;
-        }
-
-        .status-dot.neutral {
-            background-color: var(--text-muted);
-            box-shadow: none;
-        }
-
-        @keyframes statusPulse {
-            0%, 100% { opacity: 1; transform: scale(1); }
-            50% { opacity: 0.4; transform: scale(0.85); }
-        }
-
-        .connection-test-details {
-            margin-top: 12px;
-            padding: 10px 12px;
-            background-color: rgba(255, 255, 255, 0.02);
-            border: 1px solid rgba(255, 255, 255, 0.06);
-            border-radius: var(--radius-md);
-            display: none;
-        }
-
-        .connection-test-details.show {
-            display: block;
-        }
-
-        .connection-test-details .test-row {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 5px 0;
-            font-size: 12px;
-        }
-
-        .connection-test-details .test-row + .test-row {
-            border-top: 1px solid rgba(255, 255, 255, 0.04);
-        }
-
-        .connection-test-details .test-label {
-            color: var(--text-secondary);
-        }
-
-        .connection-test-details .test-value {
-            font-weight: 600;
-        }
-
-        .connection-test-details .test-value.ok {
-            color: var(--success-color);
-        }
-
-        .connection-test-details .test-value.fail {
-            color: var(--danger-color);
-        }
-
-        .connection-test-details .test-value.checking {
-            color: var(--accent-color);
-        }
-
-        .connection-test-details .test-message {
-            color: var(--text-muted);
-            font-size: 11px;
-            margin-top: 6px;
-            line-height: 1.4;
-        }
-
-        /* Grid Layout */
-        .dashboard-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 20px;
-            margin-bottom: 20px;
-        }
-
-        .grid-full {
-            grid-column: 1 / -1;
-        }
-
-        /* Card Component */
-        .card {
-            background-color: var(--bg-card);
-            border: 1px solid var(--border-color);
-            border-radius: var(--radius-lg);
-            padding: 20px;
-            transition: transform var(--transition-speed), border-color var(--transition-speed);
-        }
-
-        .card:hover {
-            border-color: var(--accent-color);
-            transform: translateY(-2px);
-        }
-
-        .card-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 15px;
-            padding-bottom: 10px;
-            border-bottom: 1px solid var(--border-color);
-        }
-
-        .card-title {
-            font-size: 14px;
-            font-weight: 600;
-            color: var(--text-secondary);
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        /* Info Rows */
-        .info-row {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 8px 0;
-            font-size: 14px;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.03);
-        }
-
-        .info-row:last-child {
-            border-bottom: none;
-        }
-
-        .info-label {
-            color: var(--text-secondary);
-        }
-
-        .info-value {
-            color: var(--text-primary);
-            font-family: 'Consolas', monospace;
-        }
-
-        /* Stats Blocks */
-        .stats-container {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            padding: 10px 0;
-        }
-
-        .stat-circle {
-            width: 120px;
-            height: 120px;
-            border-radius: 50%;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            position: relative;
-            background: conic-gradient(var(--fps-color, var(--accent-color)) calc(var(--pct, 0) * 1%), var(--bg-card-hover) 0);
-        }
-        .stat-circle::after {
-            content: '';
-            position: absolute;
-            top: 4px;
-            left: 4px;
-            right: 4px;
-            bottom: 4px;
-            border-radius: 50%;
-            background: var(--bg-card);
-            z-index: 1;
-        }
-        .stat-circle > * {
-            z-index: 2;
-        }
-
-        .stat-value {
-            font-size: 32px;
-            font-weight: 700;
-            color: var(--text-primary);
-        }
-
-        .stat-label {
-            font-size: 12px;
-            color: var(--text-secondary);
-            margin-top: 4px;
-        }
-
-        /* Monitor Preview */
-        .monitor-preview {
-            width: 100%;
-            height: 180px;
-            background-color: #000;
-            border: 2px solid var(--border-color);
-            border-radius: 8px;
-            position: relative;
-            margin: 0 auto;
-            max-width: 320px;
-        }
-
-        .led-strip {
-            position: absolute;
-            background: linear-gradient(90deg, #ff0000, #00ff00, #0000ff);
-            /* Demo gradient */
-            opacity: 0.6;
-            filter: blur(4px);
-        }
-
-        .led-top {
-            top: -4px;
-            left: 0;
-            right: 0;
-            height: 4px;
-        }
-
-        .led-bottom {
-            bottom: -4px;
-            left: 0;
-            right: 0;
-            height: 4px;
-        }
-
-        .led-left {
-            top: 0;
-            bottom: 0;
-            left: -4px;
-            width: 4px;
-        }
-
-        .led-right {
-            top: 0;
-            bottom: 0;
-            right: -4px;
-            width: 4px;
-        }
-
-        .monitor-screen {
-            position: absolute;
-            top: 10px;
-            bottom: 10px;
-            left: 10px;
-            right: 10px;
-            background-color: #111;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: #333;
-            border-radius: 4px;
-        }
-
-        /* Buttons & Inputs */
-        .btn {
-            background-color: var(--bg-card-hover);
-            color: var(--text-primary);
-            border: 1px solid var(--border-color);
-            padding: 8px 16px;
-            border-radius: var(--radius-md);
-            cursor: pointer;
-            font-size: 13px;
-            font-weight: 500;
-            transition: all 0.2s;
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .btn:hover {
-            border-color: var(--text-secondary);
-            background-color: #2a3241;
-        }
-
-        .btn-primary {
-            background-color: var(--success-color);
-            border-color: transparent;
-            color: white;
-        }
-
-        .btn-primary:hover {
-            background-color: #1a7f37;
-        }
-
-        .btn-danger {
-            background-color: rgba(218, 54, 51, 0.1);
-            color: var(--danger-color);
-            border-color: var(--danger-color);
-        }
-
-        .btn-danger:hover {
-            background-color: var(--danger-color);
-            color: white;
-        }
-
-        .input-group {
-            margin-top: 15px;
-        }
-
-        .input-control {
-            background-color: var(--bg-body);
-            border: 1px solid var(--border-color);
-            color: var(--text-primary);
-            padding: 8px 12px;
-            border-radius: var(--radius-md);
-            width: 100%;
-            margin-bottom: 10px;
-            outline: none;
-            transition: border-color var(--transition-speed);
-        }
-
-        .input-control:focus {
-            border-color: var(--accent-color);
-        }
-
-        /* Scrollbar */
-        ::-webkit-scrollbar {
-            width: 8px;
-        }
-
-        ::-webkit-scrollbar-track {
-            background: var(--bg-body);
-        }
-
-        ::-webkit-scrollbar-thumb {
-            background: var(--border-color);
-            border-radius: 4px;
-        }
-
-        ::-webkit-scrollbar-thumb:hover {
-            background: var(--text-secondary);
-        }
-
-        /* Toast Notifications */
-        #toast-container {
-            position: fixed;
-            bottom: 20px;
-            right: 20px;
-            z-index: 9999;
-        }
-
-        .toast {
-            background-color: var(--bg-card);
-            border-left: 4px solid var(--accent-color);
-            color: var(--text-primary);
-            padding: 12px 20px;
-            margin-top: 10px;
-            border-radius: 4px;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
-            font-size: 14px;
-            animation: slideIn 0.3s ease;
-        }
-
-        @keyframes slideIn {
-            from {
-                transform: translateX(100%);
-                opacity: 0;
-            }
-
-            to {
-                transform: translateX(0);
-                opacity: 1;
-            }
-        }
-
-        /* Toggle Switch */
-        .toggle-switch {
-            position: relative;
-            display: inline-block;
-            width: 48px;
-            height: 26px;
-            flex-shrink: 0;
-        }
-
-        .toggle-switch input {
-            opacity: 0;
-            width: 0;
-            height: 0;
-        }
-
-        .toggle-slider {
-            position: absolute;
-            cursor: pointer;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background-color: var(--bg-card-hover);
-            border: 1px solid var(--border-color);
-            border-radius: 26px;
-            transition: 0.3s;
-        }
-
-        .toggle-slider:before {
-            position: absolute;
-            content: "";
-            height: 20px;
-            width: 20px;
-            left: 2px;
-            bottom: 2px;
-            background-color: var(--text-secondary);
-            border-radius: 50%;
-            transition: 0.3s;
-        }
-
-        .toggle-switch input:checked+.toggle-slider {
-            background-color: var(--success-color);
-            border-color: var(--success-color);
-        }
-
-        .toggle-switch input:checked+.toggle-slider:before {
-            transform: translateX(22px);
-            background-color: white;
-        }
-        /* Log Kartı */
-        .log-panel {
-            display: none;
-            position: fixed;
-            top: var(--titlebar-height);
-            right: 0;
-            bottom: 0;
-            width: 480px;
-            background-color: var(--bg-sidebar);
-            border-left: 1px solid var(--border-color);
-            z-index: 500;
-            flex-direction: column;
-            box-shadow: -4px 0 20px rgba(0,0,0,0.4);
-        }
-        .log-panel.open {
-            display: flex;
-        }
-        .log-panel-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 14px 16px;
-            border-bottom: 1px solid var(--border-color);
-            flex-shrink: 0;
-        }
-        .log-entries {
-            flex: 1;
-            overflow-y: auto;
-            padding: 8px 12px;
-            font-family: 'Consolas', 'Monaco', monospace;
-            font-size: 12px;
-            line-height: 1.6;
-        }
-        .log-entry {
-            display: flex;
-            gap: 8px;
-            padding: 3px 0;
-            border-bottom: 1px solid rgba(255,255,255,0.03);
-            animation: logFadeIn 0.25s ease;
-        }
-        @keyframes logFadeIn {
-            from { opacity: 0; transform: translateY(-4px); }
-            to   { opacity: 1; transform: translateY(0); }
-        }
-        .log-time {
-            color: var(--text-muted);
-            flex-shrink: 0;
-        }
-        .log-level {
-            font-weight: 700;
-            flex-shrink: 0;
-            width: 48px;
-        }
-        .log-level.INFO  { color: var(--accent-color); }
-        .log-level.WARNING { color: var(--warning-color); }
-        .log-level.ERROR { color: var(--danger-color); }
-        .log-level.DEBUG { color: var(--text-muted); }
-        .log-msg {
-            color: var(--text-secondary);
-            word-break: break-all;
-        }
-        .log-panel-footer {
-            display: flex;
-            gap: 8px;
-            padding: 10px 12px;
-            border-top: 1px solid var(--border-color);
-            flex-shrink: 0;
-        }
-        /* FPS renk göstergesi */
-        .stat-circle.fps-good  { --fps-color: var(--success-color); }
-        .stat-circle.fps-warn  { --fps-color: var(--warning-color); }
-        .stat-circle.fps-bad   { --fps-color: var(--danger-color); }
-        /* Bağlantı geçiş animasyonu */
-        .status-dot {
-            transition: background-color 1s ease, box-shadow 1s ease;
-        }
-    </style>
+    <title>LuxEdge</title>
+    <meta name="description" content="LuxEdge ambilight ve LED kontrol paneli">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
 </head>
 
 <body>
 
-    <!-- Titlebar -->
     <div class="titlebar">
-        <div class="app-logo">
-            <span style="color: var(--accent-color);">⚡</span> LUXEDGE
-        </div>
-        <div class="drag-area"></div> <!-- Sürüklenebilir alan -->
+        <div class="titlebar-brand">LuxEdge</div>
+        <div class="titlebar-drag"></div>
         <div class="window-controls">
-            <button class="control-btn" id="btn-minimize" title="Küçült">
-                <svg width="10" height="1" viewBox="0 0 10 1">
-                    <path fill="currentColor" d="M0 0h10v1H0z" />
-                </svg>
+            <button class="window-btn" id="btn-minimize" title="Küçült" aria-label="Küçült">
+                <svg width="10" height="10" viewBox="0 0 10 10"><path d="M1 5h8" stroke="currentColor" stroke-width="1.2"/></svg>
             </button>
-            <button class="control-btn" id="btn-maximize" title="Büyüt">
-                <svg width="10" height="10" viewBox="0 0 10 10">
-                    <path fill="none" stroke="currentColor" d="M1.5 1.5h7v7h-7z" />
-                </svg>
+            <button class="window-btn" id="btn-maximize" title="Büyüt" aria-label="Büyüt">
+                <svg width="10" height="10" viewBox="0 0 10 10"><rect x="1.5" y="1.5" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
             </button>
-            <button class="control-btn close" id="btn-close" title="Kapat">
-                <svg width="10" height="10" viewBox="0 0 10 10">
-                    <path fill="currentColor" d="M1 0L0 1l4 4-4 4 1 1 4-4 4 4 1-1-4-4 4-4-1-1-4 4z" />
-                </svg>
+            <button class="window-btn close" id="btn-close" title="Kapat" aria-label="Kapat">
+                <svg width="10" height="10" viewBox="0 0 10 10"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" stroke-width="1.2"/></svg>
             </button>
         </div>
     </div>
 
-    <!-- App Container -->
-    <div class="app-container">
+    <div class="app">
 
-        <!-- Sidebar -->
-        <div class="sidebar">
-            <div class="sidebar-header">
-                <h2>Kontrol Paneli</h2>
-            </div>
-
-            <nav class="nav-menu">
-                <a class="nav-item active" onclick="showDashboard()">
-                    <span>📊</span> Genel Durum
-                </a>
-                <a class="nav-item" onclick="forceScan()">
-                    <span>📡</span> Ağ Taraması
-                </a>
-                <a class="nav-item" onclick="saveConfig()">
-                    <span>💾</span> Ayarları Kaydet
-                </a>
-                <a class="nav-item" onclick="showLogsPanel()">
-                    <span>📋</span> Sistem Logları
-                </a>
+        <aside class="sidebar">
+            <nav class="nav">
+                <button class="nav-item active" data-page="overview">
+                    <svg viewBox="0 0 16 16"><rect x="1.5" y="1.5" width="5" height="5" rx="1"/><rect x="9.5" y="1.5" width="5" height="5" rx="1"/><rect x="1.5" y="9.5" width="5" height="5" rx="1"/><rect x="9.5" y="9.5" width="5" height="5" rx="1"/></svg>
+                    <span>Genel Bakış</span>
+                </button>
+                <button class="nav-item" data-page="ambilight">
+                    <svg viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="8.5" rx="1"/><path d="M5.5 14h5M8 11v3"/></svg>
+                    <span>Ambilight</span>
+                </button>
+                <button class="nav-item" data-page="devices">
+                    <svg viewBox="0 0 16 16"><path d="M8 1.5l6.5 3.25L8 8 1.5 4.75z"/><path d="M1.5 8L8 11.25 14.5 8"/><path d="M1.5 11.25L8 14.5l6.5-3.25"/></svg>
+                    <span>Cihazlar</span>
+                </button>
+                <button class="nav-item" data-page="wemos">
+                    <svg viewBox="0 0 16 16"><rect x="4" y="4" width="8" height="8" rx="1"/><path d="M6 1.5v2.5M10 1.5v2.5M6 12v2.5M10 12v2.5M1.5 6h2.5M1.5 10h2.5M12 6h2.5M12 10h2.5"/></svg>
+                    <span>Wemos</span>
+                </button>
+                <button class="nav-item" data-page="logs">
+                    <svg viewBox="0 0 16 16"><path d="M2 3.5h12M2 8h12M2 12.5h8"/></svg>
+                    <span>Günlük</span>
+                </button>
+                <button class="nav-item" data-page="system">
+                    <svg viewBox="0 0 16 16"><path d="M2 4.5h12M2 11.5h12"/><circle cx="6" cy="4.5" r="1.75"/><circle cx="10" cy="11.5" r="1.75"/></svg>
+                    <span>Sistem</span>
+                </button>
             </nav>
-
             <div class="sidebar-footer">
-                <div class="nav-menu">
-                    <a class="nav-item" onclick="restartApp()">
-                        <span>🔄</span> Uygulamayı Yeniden Başlat
-                    </a>
-                </div>
-                <div style="font-size: 11px; color: var(--text-muted); margin-top: 15px; text-align: center;">
-                    Versiyon 1.6.4.2
-                </div>
+                <div class="sidebar-version" id="app-version">Sürüm 1.7.0</div>
             </div>
-        </div>
+        </aside>
 
-        <!-- Main Content -->
-        <div class="main-content">
-
-            <!-- Status Header -->
-            <div class="status-header">
+        <main class="main">
+            <header class="page-header">
                 <div>
-                    <h1 style="font-size: 24px;">Genel Bakış</h1>
-                    <p style="color: var(--text-secondary); font-size: 14px; margin-top: 5px;">Sistem durumu ve
-                        istatistikler</p>
+                    <h1 id="page-title">Genel Bakış</h1>
+                    <p id="page-subtitle">Bağlantı, performans ve ekran düzeni</p>
                 </div>
-                <div class="status-badge">
-                    <div id="status-dot" class="status-dot"></div>
-                    <span id="status-text">Bağlanıyor...</span>
+                <div class="status-pill">
+                    <span id="status-dot" class="status-dot"></span>
+                    <span id="status-text">Bağlanıyor</span>
                 </div>
-            </div>
+            </header>
 
-            <!-- Dashboard Grid -->
-            <div class="dashboard-grid">
-
-                <!-- Bağlantı Kartı -->
-                <div class="card">
-                    <div class="card-header">
-                        <div class="card-title"><span>🔌</span> Bağlantı</div>
-                        <div style="display: flex; gap: 8px;">
-                            <button class="btn btn-primary" onclick="testWemosConnection()"
-                                title="Wemos'a UDP PING/PONG ve HTTP /status ile ayrı ayrı bağlantı test eder"
-                                style="padding: 4px 8px; font-size: 11px;">🧪 Test Et</button>
-                            <button class="btn" onclick="forceScan()"
-                                title="Ağdaki Wemos cihazını otomatik olarak arar ve bulduğunda IP'sini kaydeder"
-                                style="padding: 4px 8px; font-size: 11px;">🔍 Tara</button>
+            <!-- GENEL BAKIŞ -->
+            <section class="page active" data-page="overview">
+                <div class="stat-grid">
+                    <div class="stat">
+                        <div class="stat-label">Bağlantı</div>
+                        <div class="stat-value" id="conn-status">-</div>
+                        <div class="stat-sub" id="ov-wemos-ip">IP bekleniyor</div>
+                    </div>
+                    <div class="stat stat-ring">
+                        <div class="ring" id="fps-ring">
+                            <span class="ring-value" id="fps-val">0</span>
+                        </div>
+                        <div>
+                            <div class="stat-label">Gerçek FPS</div>
+                            <div class="stat-sub">Hedef <span id="target-fps-display">60</span> FPS</div>
                         </div>
                     </div>
-                    <div class="info-row"><span class="info-label">Durum</span><span class="info-value"
-                            id="conn-status">-</span></div>
-                    <div class="info-row"><span class="info-label">Wemos IP</span><span class="info-value"
-                            id="wemos-ip">-</span></div>
-                    <div class="info-row"><span class="info-label">Port</span><span class="info-value"
-                            id="wemos-port">-</span></div>
-                    <div class="info-row"><span class="info-label">Yerel IP</span><span class="info-value"
-                            id="local-ip">-</span></div>
-
-                    <!-- Bağlantı Test Detayları -->
-                    <div id="connection-test-details" class="connection-test-details">
-                        <div class="test-row">
-                            <span class="test-label" title="Wemos UDP port 7777'e PING gönderilir, PONG yanıtı beklenir. LED verisinin ana iletişim protokolüdür.">📡 UDP PING/PONG</span>
-                            <span id="udp-test-result" class="test-value checking">Bekleniyor</span>
-                        </div>
-                        <div class="test-row">
-                            <span class="test-label" title="Wemos HTTP /status endpoint'i kontrol edilir. UDP engelliyse bağlantı doğrulama için yedek protokoldür.">🌐 HTTP /status</span>
-                            <span id="http-test-result" class="test-value checking">Bekleniyor</span>
-                        </div>
-                        <div class="test-message" id="connection-test-message">Test için "🧪 Test Et" butonuna basın.</div>
+                    <div class="stat">
+                        <div class="stat-label">Paketler</div>
+                        <div class="stat-value" id="packets-sent">0</div>
+                        <div class="stat-sub">Hata: <span id="error-count">0</span></div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-label">LED</div>
+                        <div class="stat-value"><span id="total-leds">0</span></div>
+                        <div class="stat-sub" id="ov-monitor-name">Monitör seçilmedi</div>
                     </div>
                 </div>
-
-                <!-- Performans Kartı -->
-                <div class="card">
-                    <div class="card-header">
-                        <div class="card-title"><span>⚡</span> Performans</div>
-                    </div>
-                    <div class="stats-container">
-                        <div class="stat-circle">
-                            <span class="stat-value" id="fps-val">0</span>
-                            <span class="stat-label">FPS</span>
-                        </div>
-                    </div>
-                    <div class="info-row"><span class="info-label">Hedef FPS</span><span class="info-value" id="target-fps-display">60</span>
-                    </div>
-                    <div class="info-row"><span class="info-label">Paketler</span><span class="info-value"
-                            id="packets-sent">0</span></div>
-                    <div class="info-row"><span class="info-label">Hatalar</span><span class="info-value"
-                            id="error-count" style="color: var(--text-muted); cursor: help;" title="Son hata bilgisi için buraya tıklayın">0</span></div>
-                    <div class="info-row" id="last-error-row" style="display:none;"><span class="info-label" style="color: var(--danger-color);">Son Hata</span><span class="info-value" id="last-error-text" style="color: var(--danger-color); font-size: 11px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title=""></span></div>
+                <div class="kv-row hidden" id="last-error-row">
+                    <span class="kv-label danger">Son hata</span>
+                    <span class="kv-value danger" id="last-error-text"></span>
                 </div>
 
-                <!-- LED Konfigürasyonu (Geniş Kart) -->
-                <div class="card grid-full">
-                    <div class="card-header">
-                        <div class="card-title"><span>💡</span> LED Konfigürasyonu</div>
-                        <span style="font-size: 12px; color: var(--text-muted);"><span id="total-leds">0</span> Toplam
-                            LED</span>
-                    </div>
-
-                    <div style="display: flex; gap: 30px; align-items: flex-start;">
-                        <!-- Monitör Önizleme -->
-                        <div style="flex: 1;">
-                            <div class="monitor-preview">
-                                <div class="monitor-screen">MONITÖR</div>
-                                <div class="led-strip led-top"></div>
-                                <div class="led-strip led-bottom"></div>
-                                <div class="led-strip led-left"></div>
-                                <div class="led-strip led-right"></div>
-                            </div>
+                <div class="grid-2">
+                    <div class="card">
+                        <div class="card-head">
+                            <h2>Ekran düzeni</h2>
+                            <button class="btn btn-ghost btn-sm" data-goto="ambilight">Düzenle</button>
                         </div>
+                        <div class="preview">
+                            <div class="preview-edge top" id="pv-top"><span>0</span></div>
+                            <div class="preview-edge bottom" id="pv-bottom"><span>0</span></div>
+                            <div class="preview-edge left" id="pv-left"><span>0</span></div>
+                            <div class="preview-edge right" id="pv-right"><span>0</span></div>
+                            <div class="preview-screen"><span id="pv-monitor">Monitör</span></div>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-head">
+                            <h2>Cihazlar</h2>
+                            <button class="btn btn-ghost btn-sm" data-goto="devices">Yönet</button>
+                        </div>
+                        <div class="list" id="ov-device-list"></div>
+                        <p class="hint" id="ov-multi-hint"></p>
+                    </div>
+                </div>
+            </section>
 
-                        <!-- Ayarlar -->
-                        <div style="flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
-                            <div style="grid-column: 1 / -1;">
-                                <label style="font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; display: block;"
-                                    title="LED şeridinin arkasına takılı olduğu ekranı seçin. Ambilight yalnızca bu ekranın kenarlarını tarar.">🖥️ Hedef Monitör / Ekran Seçimi</label>
-                                <div style="display:flex; gap:8px; align-items:center;"><select id="led_monitor_index" class="input-control" style="cursor: pointer; margin-bottom: 0; min-width:0; flex:1;">
-                                    <option value="1">Monitör 1 (Yükleniyor...)</option>
+            <!-- AMBILIGHT -->
+            <section class="page" data-page="ambilight">
+                <div class="grid-2">
+                    <div class="card">
+                        <div class="card-head"><h2>Ekran ve LED düzeni</h2><span class="muted"><span id="amb-total-leds">0</span> LED</span></div>
+                        <div class="field">
+                            <label for="led_monitor_index">Hedef monitör</label>
+                            <div class="row">
+                                <select id="led_monitor_index" class="input">
+                                    <option value="1">Monitör 1</option>
                                 </select>
-<button type="button" class="btn btn-secondary monitor-refresh" onclick="refreshMonitors()" title="Monitör listesini yeniden tara">Güncelle</button></div>
-                            </div>
-                            <div>
-                                <label style="font-size: 12px; color: var(--text-secondary);">Üst Kenar</label>
-                                <input type="number" id="top_leds" class="input-control" value="0">
-                            </div>
-                            <div>
-                                <label style="font-size: 12px; color: var(--text-secondary);">Alt Kenar</label>
-                                <input type="number" id="bottom_leds" class="input-control" value="0">
-                            </div>
-                            <div>
-                                <label style="font-size: 12px; color: var(--text-secondary);">Sol Kenar</label>
-                                <input type="number" id="left_leds" class="input-control" value="0">
-                            </div>
-                            <div>
-                                <label style="font-size: 12px; color: var(--text-secondary);">Sağ Kenar</label>
-                                <input type="number" id="right_leds" class="input-control" value="0">
-                            </div>
-                            <div>
-                                <label style="font-size: 12px; color: var(--text-secondary);"
-                                    title="Kenardan alınan renk bölgesinin kalınlığı. Çok yüksek yaparsanız performans düşebilir.">Tarama
-                                    Kalınlığı (px)</label>
-                                <input type="number" id="edge_width" class="input-control" value="20">
-                            </div>
-                            <div>
-                                <label style="font-size: 12px; color: var(--text-secondary);"
-                                    title="Ekran kenarından ne kadar piksellik alanın atlanacağı.">İçeri Kaydırma
-                                    (px)</label>
-                                <input type="number" id="edge_offset" class="input-control" value="0">
+                                <button type="button" class="btn btn-ghost monitor-refresh" onclick="refreshMonitors()">Güncelle</button>
                             </div>
                         </div>
-                    </div>
-                    
-                    <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid var(--border-color);">
-                        <div style="display: flex; align-items: center; gap: 10px;">
-                            <label for="fullscreen_max_brightness" style="font-size: 13px; color: var(--text-secondary);">Tam Ekran Maks. Parlaklık:</label>
-                            <input type="range" id="fullscreen_max_brightness" min="30" max="255" value="255" style="flex-grow: 1; max-width: 400px; accent-color: var(--accent-color); cursor: pointer;">
-                            <span id="fullscreen_max_brightness_val" style="font-size: 13px; color: var(--text-primary); width: 30px;">255</span>
-                            <span id="estimated_amper_val" style="font-size: 12px; color: var(--warning-color); font-weight: 600; background-color: rgba(210, 153, 34, 0.1); padding: 3px 8px; border-radius: 4px; border: 1px solid rgba(210, 153, 34, 0.2);" title="Tüm LED'ler tam beyaz renkte yandığında çekilecek tahmini maksimum akım miktarı.">~0.0A</span>
+                        <div class="edge-layout">
+                            <div class="edge-field edge-top"><label for="top_leds">Üst</label><input type="number" id="top_leds" class="input" min="0" value="0"></div>
+                            <div class="edge-field edge-left"><label for="left_leds">Sol</label><input type="number" id="left_leds" class="input" min="0" value="0"></div>
+                            <div class="edge-center"><div class="preview small"><div class="preview-screen"></div></div></div>
+                            <div class="edge-field edge-right"><label for="right_leds">Sağ</label><input type="number" id="right_leds" class="input" min="0" value="0"></div>
+                            <div class="edge-field edge-bottom"><label for="bottom_leds">Alt</label><input type="number" id="bottom_leds" class="input" min="0" value="0"></div>
                         </div>
-                        <p style="font-size: 11px; color: var(--text-muted); margin-top: 5px;">💡 Sadece oyun veya video <b>tam ekrandayken</b> LED'lerin çıkabileceği maksimum parlaklık seviyesini sınırlar (30-255).</p>
+                        <div class="row-2">
+                            <div class="field">
+                                <label for="edge_width">Tarama kalınlığı (px)</label>
+                                <input type="number" id="edge_width" class="input" min="1" value="20">
+                            </div>
+                            <div class="field">
+                                <label for="edge_offset">İçeri kaydırma (px)</label>
+                                <input type="number" id="edge_offset" class="input" min="0" value="0">
+                            </div>
+                        </div>
+                        <p class="hint">Kenar sırası: sağ (alttan yukarı), üst (sağdan sola), sol (yukarıdan aşağı), alt (soldan sağa). Wemos'taki şeritler bu sırayla tek zincir gibi beslenir.</p>
                     </div>
 
-                    <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border-color);">
-                        <div style="display: flex; align-items: center; gap: 10px;">
-                            <label for="target_fps" style="font-size: 13px; color: var(--text-secondary);">Hedef FPS:</label>
-                            <input type="range" id="target_fps" min="10" max="60" step="5" value="60" style="flex-grow: 1; max-width: 400px; accent-color: var(--accent-color); cursor: pointer;">
-                            <span id="target_fps_val" style="font-size: 13px; color: var(--text-primary); width: 55px;">60 FPS</span>
-                        </div>
-                        <p style="font-size: 11px; color: var(--text-muted); margin-top: 5px;">⚡ Daha düşük FPS (örn. 30), Wemos'un Wi-Fi bağlantısını rahatlatarak kesintileri azaltabilir. Değişiklik anında uygulanır.</p>
-                    </div>
-                </div>
-
-                <!-- Bekleme Modu (Sabit Renk) -->
-                <div class="card grid-full">
-                    <div class="card-header">
-                        <div class="card-title"><span>🎨</span> Bekleme Modu (Sabit Renk)</div>
-                    </div>
-                    <div style="display: flex; gap: 20px; flex-wrap: wrap; align-items: center;">
-                        <div style="display: flex; align-items: center; gap: 10px;">
-                            <input type="checkbox" id="idle_mode"
-                                style="width: 18px; height: 18px; accent-color: var(--accent-color); cursor: pointer;">
-                            <label for="idle_mode" style="font-size: 14px; color: var(--text-primary); cursor: pointer;"
-                                title="Oyun veya video tam ekran olmadığında kullanılacak sabit renk modunu açar.">Bekleme
-                                Modunu Aktifleştir</label>
-                        </div>
-
-                        <div style="display: flex; align-items: center; gap: 10px; margin-left: 20px;">
-                            <input type="checkbox" id="idle_use_windows_color"
-                                style="width: 16px; height: 16px; accent-color: var(--accent-color); cursor: pointer;">
-                            <label for="idle_use_windows_color"
-                                style="font-size: 13px; color: var(--text-secondary); cursor: pointer;"
-                                title="Rengi otomatik olarak Windows'un ana tema rengi ile senkronize eder.">Windows
-                                Tema Rengini Kullan</label>
+                    <div class="stack">
+                        <div class="card">
+                            <div class="card-head"><h2>Parlaklık ve kare hızı</h2></div>
+                            <div class="field">
+                                <div class="label-row"><label for="fullscreen_max_brightness">Tam ekranda en yüksek parlaklık</label><span class="muted"><span id="fullscreen_max_brightness_val">255</span> · <span id="estimated_amper_val">0.0 A</span></span></div>
+                                <input type="range" id="fullscreen_max_brightness" min="30" max="255" value="255">
+                                <p class="hint">Oyun veya video tam ekrandayken uygulanır. Akım tahmini tüm LED'lerin beyaz yanması içindir.</p>
+                            </div>
+                            <div class="field">
+                                <div class="label-row"><label for="target_fps">Hedef kare hızı</label><span class="muted" id="target_fps_val">60 FPS</span></div>
+                                <input type="range" id="target_fps" min="10" max="60" step="5" value="60">
+                                <p class="hint">Düşük değer Wi-Fi yükünü azaltır. Anında uygulanır.</p>
+                            </div>
                         </div>
 
-                        <div style="display: flex; align-items: center; gap: 10px; margin-left: 20px;">
-                            <label for="idle_color" style="font-size: 13px; color: var(--text-secondary);">Renk
-                                Seçimi:</label>
-                            <input type="color" id="idle_color" value="#ff0000"
-                                style="width: 40px; height: 30px; padding: 0; border: none; outline: none; background: none; cursor: pointer; border-radius: 4px;">
-                        </div>
-
-                        <div
-                            style="display: flex; align-items: center; gap: 10px; flex-grow: 1; max-width: 300px; margin-left: 20px;">
-                            <label for="idle_brightness"
-                                style="font-size: 13px; color: var(--text-secondary);">Parlaklık:</label>
-                            <input type="range" id="idle_brightness" min="0" max="100" value="50"
-                                style="flex-grow: 1; accent-color: var(--accent-color); cursor: pointer;">
-                            <span id="idle_brightness_val"
-                                style="font-size: 13px; color: var(--text-primary); width: 40px;">50%</span>
-                        </div>
-                    </div>
-                    <p style="font-size: 11px; color: var(--text-muted); margin-top: 15px;">
-                        💡 <b>Nasıl Çalışır?</b> Oyun veya uygulama tam ekrana geçtiğinde sistem otomatik pencereyi
-                        tarar (Ambilight). Tam ekranda çalışan bir şey yoksa yukarıda seçtiğiniz renk ve parlaklıkta
-                        sabit olarak yanar.
-                    </p>
-                </div>
-
-                <!-- Wemos Kontrol -->
-                <div class="card grid-full">
-                    <div class="card-header">
-                        <div class="card-title"><span>🛠️</span> Wemos Kontrol</div>
-                    </div>
-                    <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-                        <button class="btn" onclick="restartWemos()"
-                            title="Wemos mikrodenetleyicisini uzaktan yeniden başlatır. Donma veya bağlantı sorunlarında kullanın.">
-                            🔄 Yeniden Başlat</button>
-                        <button class="btn" onclick="toggleSleep()"
-                            title="Wemos'un uyku modunu açar/kapatır. Uyku modunda LED'ler söner ama cihaz bağlı kalır.">
-                            🌙 Uyku Modu</button>
-                        <button class="btn btn-danger" onclick="resetWemosWifi()"
-                            title="⚠️ DİKKAT: Wemos'un Wi-Fi ayarlarını tamamen sıfırlar. Cihaz hotspot moduna döner ve yeniden kurulum gerekir.">
-                            ⚠️ Wi-Fi Sıfırla</button>
-                    </div>
-                    <p style="font-size: 11px; color: var(--text-muted); margin-top: 10px;">
-                        💡 <b>Yeniden Başlat:</b> Wemos'u resetler &nbsp;|&nbsp; <b>Uyku Modu:</b> LED'leri açar/kapatır
-                        &nbsp;|&nbsp; <b>Wi-Fi Sıfırla:</b> Wemos'u fabrika Wi-Fi ayarlarına döndürür
-                    </p>
-
-                    <div class="input-group">
-                        <label
-                            style="font-size: 12px; color: var(--text-secondary); margin-bottom: 5px; display: block;">
-                            📝 Manuel IP Adresi</label>
-                        <p style="font-size: 11px; color: var(--text-muted); margin-bottom: 8px;">
-                            Otomatik tarama Wemos'u bulamadıysa, IP adresini elle yazıp kaydedebilirsiniz. Wemos'un
-                            IP'sini router ayarlarından öğrenebilirsiniz.
-                        </p>
-                        <div style="display: flex; gap: 10px;">
-                            <input type="text" id="manual-ip-input" class="input-control" placeholder="Örn: 33.33.33.8"
-                                style="margin-bottom: 0;" title="Wemos cihazınızın IP adresini buraya yazın">
-                            <button class="btn btn-primary" onclick="saveManualIp()"
-                                title="Girilen IP adresini kaydeder ve Wemos'a bağlanmaya çalışır">💾 Kaydet</button>
+                        <div class="card">
+                            <div class="card-head"><h2>Bekleme modu</h2></div>
+                            <label class="switch-row">
+                                <span>Tam ekran uygulama yokken sabit renk göster</span>
+                                <span class="switch"><input type="checkbox" id="idle_mode"><span class="switch-track"></span></span>
+                            </label>
+                            <label class="switch-row">
+                                <span>Windows tema rengini kullan</span>
+                                <span class="switch"><input type="checkbox" id="idle_use_windows_color"><span class="switch-track"></span></span>
+                            </label>
+                            <div class="row-2">
+                                <div class="field">
+                                    <label for="idle_color">Renk</label>
+                                    <input type="color" id="idle_color" class="color" value="#ff0000">
+                                </div>
+                                <div class="field">
+                                    <div class="label-row"><label for="idle_brightness">Parlaklık</label><span class="muted" id="idle_brightness_val">50%</span></div>
+                                    <input type="range" id="idle_brightness" min="0" max="100" value="50">
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
+            </section>
 
-                <!-- Pasif Çoklu Wemos Cihaz Yönetimi -->
-                <div class="card grid-full" id="device-manager-card">
-                    <div class="card-header">
-                        <div class="card-title"><span>🖥️</span> Çoklu Wemos Cihazları</div>
-                        <div style="display:flex; align-items:center; gap:8px;">
-                            <button class="btn" onclick="scanDevices()" style="padding: 4px 8px; font-size: 11px;">🔍 Cihaz Tara</button>
-                            <button class="btn" onclick="validateDevices()" style="padding: 4px 8px; font-size: 11px;">🧪 Doğrula</button>
-                            <button class="btn btn-primary" id="multi-device-toggle" onclick="toggleMultiDeviceMode()" style="padding: 4px 8px; font-size: 11px;">Çoklu Modu Aç</button>
-                            <span id="multi-device-mode" style="font-size: 12px; color: var(--warning-color);">Pasif mod</span>
-                        </div>
+            <!-- CİHAZLAR -->
+            <section class="page" data-page="devices">
+                <div class="toolbar">
+                    <label class="switch-row inline">
+                        <span class="switch"><input type="checkbox" id="multi-device-toggle"><span class="switch-track"></span></span>
+                        <span>Çoklu cihaz modu</span>
+                    </label>
+                    <span class="muted" id="multi-device-mode">Kapalı</span>
+                    <div class="spacer"></div>
+                    <button class="btn btn-ghost" onclick="scanDevices()">Ağda ara</button>
+                    <button class="btn btn-ghost" onclick="validateDevices()">Doğrula</button>
+                    <button class="btn btn-primary" onclick="startNewDevice()">Yeni cihaz</button>
+                </div>
+                <div class="discovery hidden" id="device-discovery-results"></div>
+
+                <div class="devices-layout">
+                    <div class="card device-list-card">
+                        <div class="card-head"><h2>Kayıtlı cihazlar</h2></div>
+                        <div class="list" id="device-list"></div>
+                        <p class="hint">Ana Wemos'un IP ve kenar LED ayarları Ambilight sayfasından yönetilir. Çoklu mod kapalıyken yalnız Ana Wemos'a veri gönderilir.</p>
                     </div>
-                    <p style="font-size: 12px; color: var(--text-secondary); margin-bottom: 14px;">
-                        Buraya eklenen cihazlar kayıtlı kalır ancak çoklu cihaz modu açılana kadar LED verisi almaz.
-                        Mevcut <b>Ana Wemos</b> ayarlarını yukarıdaki tekli panelden yönetmeye devam edin.
-                    </p>
-                    <div id="device-list" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin-bottom: 16px;"></div>
-                    <div id="device-discovery-results" style="display:none; margin-bottom:16px; padding:10px; border:1px solid var(--border-color); border-radius:var(--radius-md);"></div>
-                    <div style="padding-top: 14px; border-top: 1px solid var(--border-color);">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                            <span id="device-form-title" style="font-size: 13px; color: var(--text-primary);">Yeni pasif cihaz ekle</span>
-                            <button class="btn" onclick="startNewDevice()" style="padding: 4px 8px; font-size: 11px;">＋ Yeni</button>
+
+                    <div class="card device-editor">
+                        <div class="card-head">
+                            <h2 id="device-form-title">Yeni cihaz</h2>
+                            <span class="chip neutral" id="device-validation">Doğrulanmadı</span>
                         </div>
                         <input type="hidden" id="device-id">
-                        <div style="display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 10px;">
-                            <input type="text" id="device-name" class="input-control" placeholder="Cihaz adı">
-                            <input type="text" id="device-ip" class="input-control" placeholder="IP adresi">
-                            <input type="number" id="device-port" class="input-control" value="7777" min="1" max="65535" placeholder="Port">
-                            <div style="display:flex; gap:8px; align-items:center;"><select id="device-monitor-index" class="input-control" style="min-width:0; flex:1; margin-bottom:0;"><option value="1">Monitör 1</option></select>
-<button type="button" class="btn btn-secondary monitor-refresh" onclick="refreshMonitors()" title="Monitör listesini yeniden tara">Güncelle</button></div>
-                            <input type="number" id="device-top-leds" class="input-control" value="0" min="0" placeholder="Üst LED">
-                            <input type="number" id="device-bottom-leds" class="input-control" value="0" min="0" placeholder="Alt LED">
-                            <input type="number" id="device-left-leds" class="input-control" value="0" min="0" placeholder="Sol LED">
-                            <input type="number" id="device-right-leds" class="input-control" value="0" min="0" placeholder="Sağ LED">
+                        <div class="row-2">
+                            <div class="field">
+                                <label for="device-name">Ad</label>
+                                <input type="text" id="device-name" class="input" placeholder="Örn. Masa lambası">
+                            </div>
+                            <div class="field">
+                                <label for="device-role">Görev</label>
+                                <select id="device-role" class="input">
+                                    <option value="ambilight">Ambilight (dört kenar)</option>
+                                    <option value="strips">Şerit bazlı (her şerit ayrı)</option>
+                                </select>
+                            </div>
                         </div>
-                        <div style="display: flex; gap: 10px; margin-top: 10px;">
-                            <button class="btn btn-primary" id="save-device-button" onclick="saveDevice()">💾 Cihazı Kaydet</button>
-                            <button class="btn btn-danger" id="delete-device-button" onclick="deleteSelectedDevice()" style="display:none;">🗑️ Sil</button>
+                        <div class="row-3">
+                            <div class="field">
+                                <label for="device-ip">IP adresi</label>
+                                <input type="text" id="device-ip" class="input" placeholder="192.168.1.50">
+                            </div>
+                            <div class="field">
+                                <label for="device-port">Port</label>
+                                <input type="number" id="device-port" class="input" value="7777" min="1" max="65535">
+                            </div>
+                            <div class="field">
+                                <label>Durum</label>
+                                <label class="switch-row compact">
+                                    <span class="switch"><input type="checkbox" id="device-enabled"><span class="switch-track"></span></span>
+                                    <span>Etkin</span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <div id="role-ambilight-fields">
+                            <div class="field">
+                                <label for="device-monitor-index">Monitör</label>
+                                <div class="row">
+                                    <select id="device-monitor-index" class="input"><option value="1">Monitör 1</option></select>
+                                    <button type="button" class="btn btn-ghost monitor-refresh" onclick="refreshMonitors()">Güncelle</button>
+                                </div>
+                            </div>
+                            <div class="row-4">
+                                <div class="field"><label for="device-top-leds">Üst</label><input type="number" id="device-top-leds" class="input" value="0" min="0"></div>
+                                <div class="field"><label for="device-bottom-leds">Alt</label><input type="number" id="device-bottom-leds" class="input" value="0" min="0"></div>
+                                <div class="field"><label for="device-left-leds">Sol</label><input type="number" id="device-left-leds" class="input" value="0" min="0"></div>
+                                <div class="field"><label for="device-right-leds">Sağ</label><input type="number" id="device-right-leds" class="input" value="0" min="0"></div>
+                            </div>
+                        </div>
+
+                        <div id="role-strips-fields" class="hidden">
+                            <div class="label-row">
+                                <span class="label-text">Şeritler</span>
+                                <button type="button" class="btn btn-ghost btn-sm" id="fetch-strips-button" onclick="fetchStripsFromWemos()">Wemos'tan şeritleri al</button>
+                            </div>
+                            <p class="hint">LED sayısı ve pin Wemos'un hotspot kurulumunda belirlenir; burada her şeride ayrı mod, renk ve animasyon atanır. "Ekran akışı" modu seçilen monitör kenarını yansıtır, diğer modlar bilgisayar kapalıyken de cihaz üzerinde çalışır.</p>
+                            <div id="strip-list" class="strip-list"></div>
+                        </div>
+
+                        <div class="actions">
+                            <button class="btn btn-primary" id="save-device-button" onclick="saveDevice()">Kaydet</button>
+                            <button class="btn btn-ghost" id="apply-device-button" onclick="applyDevice()">Wemos'a uygula</button>
+                            <div class="spacer"></div>
+                            <button class="btn btn-danger hidden" id="delete-device-button" onclick="deleteSelectedDevice()">Sil</button>
+                        </div>
+                        <p class="hint" id="device-editor-hint"></p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- WEMOS -->
+            <section class="page" data-page="wemos">
+                <div class="grid-2">
+                    <div class="stack">
+                        <div class="card">
+                            <div class="card-head">
+                                <h2>Bağlantı</h2>
+                                <div class="row">
+                                    <button class="btn btn-ghost btn-sm" onclick="forceScan()" title="Ağdaki Ana Wemos'u arar ve IP'sini kaydeder">Tara</button>
+                                    <button class="btn btn-primary btn-sm" onclick="testWemosConnection()" title="UDP PING/PONG ve HTTP /status ile ayrı ayrı test eder">Test et</button>
+                                </div>
+                            </div>
+                            <div class="kv"><span class="kv-label">Wemos IP</span><span class="kv-value" id="wemos-ip">-</span></div>
+                            <div class="kv"><span class="kv-label">Port</span><span class="kv-value" id="wemos-port">-</span></div>
+                            <div class="kv"><span class="kv-label">Yerel IP</span><span class="kv-value" id="local-ip">-</span></div>
+                            <div id="connection-test-details" class="test-details">
+                                <div class="kv"><span class="kv-label">UDP PING/PONG</span><span id="udp-test-result" class="kv-value checking">Bekleniyor</span></div>
+                                <div class="kv"><span class="kv-label">HTTP /status</span><span id="http-test-result" class="kv-value checking">Bekleniyor</span></div>
+                                <p class="hint" id="connection-test-message">Test için "Test et" düğmesine basın.</p>
+                            </div>
+                        </div>
+
+                        <div class="card">
+                            <div class="card-head"><h2>Elle IP</h2></div>
+                            <p class="hint">Otomatik tarama cihazı bulamazsa IP adresini buraya yazın. Yazmayı bıraktıktan kısa süre sonra kaydedilir.</p>
+                            <div class="row">
+                                <input type="text" id="manual-ip-input" class="input" placeholder="192.168.1.50">
+                                <button class="btn btn-primary" onclick="saveManualIp()">Kaydet</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="stack">
+                        <div class="card">
+                            <div class="card-head"><h2>Cihaz işlemleri</h2></div>
+                            <div class="action-list">
+                                <button class="action" onclick="restartWemos()">
+                                    <span class="action-title">Yeniden başlat</span>
+                                    <span class="action-desc">Donma veya bağlantı sorununda Wemos'u uzaktan resetler.</span>
+                                </button>
+                                <button class="action" onclick="toggleSleep()">
+                                    <span class="action-title">Uyku modu</span>
+                                    <span class="action-desc">LED'leri kapatır, cihaz ağda bağlı kalır. Tekrar basınca açılır.</span>
+                                </button>
+                                <button class="action danger" onclick="resetWemosWifi()">
+                                    <span class="action-title">Wi-Fi ve LED ayarlarını sıfırla</span>
+                                    <span class="action-desc">Cihaz hotspot moduna döner; kurulum yeniden yapılır.</span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="card">
+                            <div class="card-head"><h2>Firmware güncelleme</h2></div>
+                            <p class="hint">Derlenmiş .bin dosyasını Wi-Fi üzerinden yükler. Yükleme sırasında LED'ler mor yanar, cihazın gücünü kesmeyin.</p>
+                            <div class="row">
+                                <input type="file" id="firmware-file" accept=".bin" class="input file">
+                                <button class="btn btn-primary" onclick="uploadFirmware()" id="btn-upload-firmware">Yükle</button>
+                            </div>
+                            <div id="ota-progress" class="progress hidden">
+                                <div class="progress-track"><div id="ota-progress-bar" class="progress-bar"></div></div>
+                                <p class="hint" id="ota-status">Yükleniyor</p>
+                            </div>
                         </div>
                     </div>
                 </div>
+            </section>
 
-                <!-- Firmware Güncelleme -->
-                <div class="card grid-full">
-                    <div class="card-header">
-                        <div class="card-title"><span>📦</span> Firmware Güncelleme (OTA)</div>
-                    </div>
-                    <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 15px;">
-                        Wemos firmware'ını Wi-Fi üzerinden güncelleyin. <code>.bin</code> dosyasını seçip yükleyin.
-                        Güncelleme sırasında LED'ler <span style="color: #8000ff; font-weight: 600;">mor</span> renkte yanacaktır.
-                    </p>
-                    <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
-                        <input type="file" id="firmware-file" accept=".bin"
-                            style="background: var(--bg-body); border: 1px solid var(--border-color); color: var(--text-primary); padding: 8px; border-radius: var(--radius-md); flex-grow: 1; max-width: 400px;">
-                        <button class="btn btn-primary" onclick="uploadFirmware()" id="btn-upload-firmware"
-                            title="Seçilen .bin dosyasını Wemos'a yükler">
-                            🚀 Firmware Yükle
-                        </button>
-                    </div>
-                    <div id="ota-progress" style="display: none; margin-top: 15px;">
-                        <div style="background: var(--bg-body); border-radius: 4px; height: 8px; overflow: hidden;">
-                            <div id="ota-progress-bar" style="background: linear-gradient(90deg, #8000ff, #b366ff); height: 100%; width: 0%; transition: width 0.5s; border-radius: 4px;"></div>
+            <!-- GÜNLÜK -->
+            <section class="page page-logs" data-page="logs">
+                <div class="card log-card">
+                    <div class="card-head">
+                        <h2>Sistem günlüğü</h2>
+                        <div class="row">
+                            <label class="check"><input type="checkbox" id="log-autoscroll" checked><span>Otomatik kaydır</span></label>
+                            <button class="btn btn-ghost btn-sm" onclick="clearLogs()">Temizle</button>
+                            <button class="btn btn-ghost btn-sm" onclick="downloadLogs()">İndir</button>
                         </div>
-                        <p id="ota-status" style="font-size: 12px; color: var(--text-muted); margin-top: 8px;">Yükleniyor...</p>
                     </div>
-                    <p style="font-size: 11px; color: var(--text-muted); margin-top: 10px;">
-                        ⚠️ <b>Dikkat:</b> Güncelleme sırasında Wemos'un bağlantısını kesmeyin. Güncelleme yaklaşık 10-30 saniye sürer.
-                    </p>
+                    <div id="log-entries" class="log-entries"></div>
                 </div>
+            </section>
 
-                <!-- Sistem Ayarları -->
-                <div class="card grid-full">
-                    <div class="card-header">
-                        <div class="card-title"><span>⚙️</span> Sistem Ayarları</div>
-                    </div>
-                    <div style="display: flex; align-items: center; gap: 15px;">
-                        <label class="toggle-switch"
-                            title="Bilgisayar açıldığında LuxEdge'i sistem tepsisinde başlatır.">
-                            <input type="checkbox" id="autostart_toggle">
-                            <span class="toggle-slider"></span>
+            <!-- SİSTEM -->
+            <section class="page" data-page="system">
+                <div class="grid-2">
+                    <div class="card">
+                        <div class="card-head"><h2>Başlangıç</h2></div>
+                        <label class="switch-row">
+                            <span>
+                                <span class="block">Bilgisayar açıldığında otomatik başlat</span>
+                                <span class="hint">LuxEdge tepside çalışır ve ambilight'ı başlatır.</span>
+                            </span>
+                            <span class="switch"><input type="checkbox" id="autostart_toggle"><span class="switch-track"></span></span>
                         </label>
-                        <div>
-                            <label for="autostart_toggle"
-                                style="font-size: 14px; color: var(--text-primary); cursor: pointer;">
-                                Bilgisayar Açıldığında Otomatik Başlat
-                            </label>
-                            <p style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">
-                                Sistem başlangıcında LuxEdge tepside çalışır ve Ambilight'ı başlatır. Paneli tepsi simgesinden açabilirsiniz.
-                            </p>
+                    </div>
+                    <div class="card">
+                        <div class="card-head"><h2>Uygulama</h2></div>
+                        <div class="kv"><span class="kv-label">Sürüm</span><span class="kv-value">1.7.0</span></div>
+                        <div class="kv"><span class="kv-label">Ayar dosyası</span><span class="kv-value">%APPDATA%\LuxEdge\ambilight_config.json</span></div>
+                        <div class="kv"><span class="kv-label">Günlük dosyası</span><span class="kv-value">%APPDATA%\LuxEdge\luxedge.log</span></div>
+                        <div class="actions">
+                            <button class="btn btn-ghost" onclick="restartApp()">Uygulamayı yeniden başlat</button>
                         </div>
                     </div>
                 </div>
-
-            </div> <!-- End Grid -->
-
-        </div> <!-- End Main Content -->
-    </div> <!-- End App Container -->
-
-    <!-- Log Panel -->
-    <div id="log-panel" class="log-panel">
-        <div class="log-panel-header">
-            <span style="font-weight:600; font-size:14px;">📋 Sistem Logları</span>
-            <button class="btn" onclick="closeLogsPanel()" style="padding:4px 10px; font-size:12px;">✕ Kapat</button>
-        </div>
-        <div id="log-entries" class="log-entries"></div>
-        <div class="log-panel-footer">
-            <button class="btn" onclick="clearLogs()" style="font-size:12px;">🗑️ Temizle</button>
-            <button class="btn btn-primary" onclick="downloadLogs()" style="font-size:12px;">⬇️ İndir</button>
-            <label style="display:flex; align-items:center; gap:6px; font-size:12px; color:var(--text-secondary); margin-left:auto;">
-                <input type="checkbox" id="log-autoscroll" checked style="accent-color:var(--accent-color);">
-                Otomatik Kaydır
-            </label>
-        </div>
+            </section>
+        </main>
     </div>
 
     <div id="toast-container"></div>
 
+    <div id="dialog" class="dialog hidden">
+        <div class="dialog-box">
+            <h3 id="dialog-title"></h3>
+            <p id="dialog-text"></p>
+            <div class="actions">
+                <div class="spacer"></div>
+                <button class="btn btn-ghost" id="dialog-cancel">Vazgeç</button>
+                <button class="btn btn-primary" id="dialog-confirm">Onayla</button>
+            </div>
+        </div>
+    </div>
+
     <script src="polling.js"></script>
     <script src="monitors.js"></script>
     <script src="connection.js"></script>
-    <script>
-        let electronVisible = true;
-        const poller = createPoller(() => !document.hidden && electronVisible);
-        const fetchStatus = poller.add('status', fetchStatusData, 1500);
-        const fetchLogs = poller.add('logs', fetchLogsData, 2000);
-        // IPC API Erişimi
-        const api = window.luxedge;
-
-        // Firmware hard limit - wemos_code.ino'daki LED_COUNT ile eşleşmeli
-        const MAX_LED_COUNT = 74;
-
-        // --- DOM Elements ---
-        const els = {
-            statusDot: document.getElementById('status-dot'),
-            statusText: document.getElementById('status-text'),
-            connStatus: document.getElementById('conn-status'),
-            wemosIp: document.getElementById('wemos-ip'),
-            wemosPort: document.getElementById('wemos-port'),
-            localIp: document.getElementById('local-ip'),
-            fpsVal: document.getElementById('fps-val'),
-            packetsSent: document.getElementById('packets-sent'),
-            errorCount: document.getElementById('error-count'),
-            totalLeds: document.getElementById('total-leds'),
-
-            // Inputs
-            topLeds: document.getElementById('top_leds'),
-            bottomLeds: document.getElementById('bottom_leds'),
-            leftLeds: document.getElementById('left_leds'),
-            rightLeds: document.getElementById('right_leds'),
-            edgeWidth: document.getElementById('edge_width'),
-            edgeOffset: document.getElementById('edge_offset'),
-            manualIpInput: document.getElementById('manual-ip-input'),
-            ledMonitorIndex: document.getElementById('led_monitor_index'),
-
-            idleMode: document.getElementById('idle_mode'),
-            idleUseWindowsColor: document.getElementById('idle_use_windows_color'),
-            idleColor: document.getElementById('idle_color'),
-            idleBrightness: document.getElementById('idle_brightness'),
-            idleBrightnessVal: document.getElementById('idle_brightness_val'),
-            fullscreenMaxBrightness: document.getElementById('fullscreen_max_brightness'),
-            fullscreenMaxBrightnessVal: document.getElementById('fullscreen_max_brightness_val'),
-            targetFps: document.getElementById('target_fps'),
-            targetFpsVal: document.getElementById('target_fps_val'),
-            autostartToggle: document.getElementById('autostart_toggle')
-        };
-
-        if (els.idleBrightness) {
-            els.idleBrightness.addEventListener('input', (e) => {
-                els.idleBrightnessVal.textContent = e.target.value + '%';
-            });
-        }
-
-        if (els.targetFps) {
-            els.targetFps.addEventListener('input', (e) => {
-                els.targetFpsVal.textContent = e.target.value + ' FPS';
-            });
-        }
-        
-        function updateEstimatedAmper() {
-            const totalLeds = parseInt(els.totalLeds.textContent) || 0;
-            const brightness = els.fullscreenMaxBrightness ? parseInt(els.fullscreenMaxBrightness.value) : 255;
-            // Her WS2812B LED beyazda tam parlaklıkta ~60mA çeker (0.06A)
-            const estimatedAmper = (totalLeds * 0.06 * (brightness / 255.0)).toFixed(1);
-            const amperEl = document.getElementById('estimated_amper_val');
-            if(amperEl) amperEl.textContent = `~${estimatedAmper}A`;
-        }
-        
-        if (els.fullscreenMaxBrightness) {
-            els.fullscreenMaxBrightness.addEventListener('input', (e) => {
-                els.fullscreenMaxBrightnessVal.textContent = e.target.value;
-                updateEstimatedAmper();
-            });
-        }
-
-        // --- Auto Save Logic ---
-        let autoSaveTimer = null;
-        let isEditingMode = false;
-        let editModeTimer = null;
-
-        function handleInputEdit(isIpField = false) {
-            isEditingMode = true;
-            clearTimeout(editModeTimer);
-            // 4 saniye boyunca arayüzü kilitle ki fetchStatus eski değeri yazmasın
-            editModeTimer = setTimeout(() => { isEditingMode = false; }, 4000);
-
-            clearTimeout(autoSaveTimer);
-            // Kullanıcı yazmayı bıraktıktan bir süre sonra otomatik kaydet
-            const delay = isIpField ? 1500 : 600;
-            autoSaveTimer = setTimeout(() => {
-                if (isIpField) {
-                    saveManualIp(true);
-                } else {
-                    saveConfig(true);
-                }
-            }, delay);
-        }
-
-        document.addEventListener('DOMContentLoaded', () => {
-            const configInputs = [
-                els.topLeds, els.bottomLeds, els.leftLeds, els.rightLeds,
-                els.edgeWidth, els.edgeOffset, els.idleMode, els.idleUseWindowsColor, els.idleColor, els.idleBrightness, els.fullscreenMaxBrightness, els.targetFps,
-                els.ledMonitorIndex
-            ];
-
-            configInputs.forEach(input => {
-                if (input) {
-                    input.addEventListener('input', () => handleInputEdit(false));
-                    input.addEventListener('change', () => handleInputEdit(false));
-                }
-            });
-
-            if (els.manualIpInput) {
-                els.manualIpInput.addEventListener('input', () => handleInputEdit(true));
-            }
-
-            // Disable color picker when windows color is checked
-            if (els.idleUseWindowsColor && els.idleColor) {
-                els.idleUseWindowsColor.addEventListener('change', (e) => {
-                    els.idleColor.disabled = e.target.checked;
-                    els.idleColor.style.opacity = e.target.checked ? '0.3' : '1';
-                });
-            }
-
-            // Otomatik başlatma toggle
-            if (els.autostartToggle && api.getAutoStart) {
-                // Mevcut durumu yükle
-                api.getAutoStart().then(result => {
-                    els.autostartToggle.checked = result.enabled;
-                }).catch(() => { });
-
-                // Toggle değiştiğinde kaydet
-                els.autostartToggle.addEventListener('change', async (e) => {
-                    const enabled = e.target.checked;
-                    try {
-                        const result = await api.setAutoStart(enabled);
-                        if (result.success) {
-                            showToast(`Otomatik başlatma ${enabled ? 'açıldı ✅' : 'kapatıldı ❌'}`, 'success');
-                        } else {
-                            showToast('Ayar kaydedilemedi: ' + (result.message || ''), 'error');
-                            e.target.checked = !enabled; // Geri al
-                        }
-                    } catch (err) {
-                        showToast('Ayar kaydedilemedi', 'error');
-                        e.target.checked = !enabled;
-                    }
-                });
-            }
-        });
-
-        // --- Window Controls ---
-        document.getElementById('btn-minimize').onclick = () => api.minimizeWindow();
-        document.getElementById('btn-maximize').onclick = () => api.maximizeWindow();
-        document.getElementById('btn-close').onclick = () => api.closeWindow();
-
-        // --- Toast Messages ---
-        function showToast(message, type = 'info') {
-            const container = document.getElementById('toast-container');
-            const toast = document.createElement('div');
-            toast.className = 'toast';
-            toast.style.borderLeftColor = type === 'success' ? 'var(--success-color)' : (type === 'error' ? 'var(--danger-color)' : 'var(--accent-color)');
-            toast.textContent = message;
-            container.appendChild(toast);
-            setTimeout(() => {
-                toast.style.opacity = '0';
-                setTimeout(() => toast.remove(), 300);
-            }, 3000);
-        }
-
-        // --- API Functions ---
-        let deviceRecords = [];
-        let deviceValidations = new Map();
-        let multiDeviceEnabled = false;
-        let availableMonitors = [];
-
-        function deviceFormValue(id, fallback = '') {
-            const element = document.getElementById(id);
-            return element ? element.value : fallback;
-        }
-
-        function setDeviceForm(device = null) {
-            const isLegacy = device && device.id === 'legacy-primary';
-            const leds = device?.leds || {};
-            document.getElementById('device-id').value = device?.id || '';
-            document.getElementById('device-name').value = device?.name || '';
-            document.getElementById('device-ip').value = device?.ip || '';
-            document.getElementById('device-port').value = device?.port || 7777;
-            document.getElementById('device-monitor-index').value = device?.monitor_index || 1;
-            document.getElementById('device-top-leds').value = leds.top || 0;
-            document.getElementById('device-bottom-leds').value = leds.bottom || 0;
-            document.getElementById('device-left-leds').value = leds.left || 0;
-            document.getElementById('device-right-leds').value = leds.right || 0;
-            document.getElementById('device-form-title').textContent = isLegacy
-                ? 'Ana Wemos — tekli panelden yönetilir'
-                : (device ? 'Pasif cihazı düzenle' : 'Yeni pasif cihaz ekle');
-            document.getElementById('save-device-button').disabled = isLegacy;
-            document.getElementById('delete-device-button').style.display = device && !isLegacy ? '' : 'none';
-            document.querySelectorAll('#device-manager-card input, #device-manager-card select').forEach(element => {
-                if (element.id !== 'device-id') element.disabled = isLegacy;
-            });
-        }
-
-        function renderDevices() {
-            const container = document.getElementById('device-list');
-            const mode = document.getElementById('multi-device-mode');
-            const toggle = document.getElementById('multi-device-toggle');
-            if (!container) return;
-            container.replaceChildren();
-            if (mode) mode.textContent = multiDeviceEnabled ? 'Çoklu mod etkin' : 'Pasif mod — LED verisi gönderilmiyor';
-            if (toggle) toggle.textContent = multiDeviceEnabled ? 'Çoklu Modu Kapat' : 'Çoklu Modu Aç';
-            if (!deviceRecords.length) {
-                const empty = document.createElement('span');
-                empty.style.color = 'var(--text-muted)';
-                empty.textContent = 'Henüz cihaz kaydı yok.';
-                container.appendChild(empty);
-                return;
-            }
-            deviceRecords.forEach(device => {
-                const card = document.createElement('button');
-                card.type = 'button';
-                card.className = 'btn';
-                card.style.cssText = 'text-align:left; padding:12px; border:1px solid var(--border-color);';
-                const leds = device.leds || {};
-                const total = ['top', 'bottom', 'left', 'right'].reduce((sum, edge) => sum + (Number(leds[edge]) || 0), 0);
-                const validation = deviceValidations.get(device.id);
-                const validationLabel = validation
-                    ? (validation.compatible ? ' | ✓ LED eşleşiyor' : ` | ⚠ ${validation.message}`)
-                    : '';
-                card.textContent = `${device.name} — ${device.ip}:${device.port} | Monitör ${device.monitor_index} | ${total} LED${device.id === 'legacy-primary' ? ' | Ana cihaz' : ' | Pasif'}${validationLabel}`;
-                card.addEventListener('click', () => setDeviceForm(device));
-                container.appendChild(card);
-            });
-        }
-
-        let monitorListVersion = -1;
-        function applyMonitorSnapshot(status) {
-            if (!Array.isArray(status.monitors) || status.monitor_list_version <= monitorListVersion) return;
-            monitorListVersion = status.monitor_list_version;
-            availableMonitors = status.monitors;
-            const selected = els.ledMonitorIndex._loaded
-                ? els.ledMonitorIndex.value : (status.led_monitor_index || 1);
-            renderMonitorOptions(els.ledMonitorIndex, availableMonitors, selected, document);
-            els.ledMonitorIndex._loaded = true;
-            const deviceSelect = document.getElementById('device-monitor-index');
-            renderMonitorOptions(deviceSelect, availableMonitors, deviceSelect.value, document);
-        }
-
-        const refreshMonitors = createMonitorRefresh(api, applyMonitorSnapshot, busy => {
-            document.querySelectorAll('.monitor-refresh').forEach(button => {
-                button.disabled = busy;
-                button.textContent = busy ? 'Güncelleniyor…' : 'Güncelle';
-            });
-        }, showToast);
-
-        async function fetchDevices() {
-            try {
-                const result = await api.getDevices();
-                if (!result.success) throw new Error(result.message || 'Cihazlar yüklenemedi');
-                deviceRecords = result.devices || [];
-                multiDeviceEnabled = Boolean(result.multi_device_enabled);
-                renderDevices();
-            } catch (error) {
-                const container = document.getElementById('device-list');
-                if (container) container.textContent = 'Cihaz kayıtları yüklenemedi.';
-            }
-        }
-
-        async function scanDevices() {
-            const results = document.getElementById('device-discovery-results');
-            try {
-                showToast('Ağdaki Wemos cihazları aranıyor...', 'info');
-                const result = await api.scanDevices();
-                if (!result.success) throw new Error(result.message || 'Tarama başarısız');
-                results.replaceChildren();
-                results.style.display = '';
-                if (!result.devices.length) {
-                    results.textContent = 'Cihaz bulunamadı. Hiçbir ayar değiştirilmedi.';
-                    return;
-                }
-                const title = document.createElement('div');
-                title.textContent = 'Bulunan cihazı seçerek forma aktarın:';
-                title.style.marginBottom = '8px';
-                results.appendChild(title);
-                result.devices.forEach(found => {
-                    const button = document.createElement('button');
-                    button.className = 'btn';
-                    button.style.marginRight = '8px';
-                    button.textContent = `${found.ip}:${found.port}`;
-                    button.addEventListener('click', () => {
-                        startNewDevice();
-                        document.getElementById('device-ip').value = found.ip;
-                        document.getElementById('device-port').value = found.port;
-                    });
-                    results.appendChild(button);
-                });
-                showToast(`${result.devices.length} cihaz bulundu; seçim yapmadan kayıt oluşturulmaz.`, 'success');
-            } catch (error) {
-                showToast(error.message || 'Tarama başarısız', 'error');
-            }
-        }
-
-        async function validateDevices() {
-            try {
-                const result = await api.validateDevices();
-                if (!result.success) throw new Error(result.message || 'Doğrulama başarısız');
-                deviceValidations = new Map((result.devices || []).map(device => [device.id, device]));
-                renderDevices();
-                const incompatible = (result.devices || []).filter(device => !device.compatible).length;
-                showToast(incompatible ? `${incompatible} cihazın LED toplamı doğrulanamadı.` : 'Tüm cihazların LED toplamı eşleşiyor.', incompatible ? 'error' : 'success');
-            } catch (error) {
-                showToast(error.message || 'Doğrulama başarısız', 'error');
-            }
-        }
-
-        async function toggleMultiDeviceMode() {
-            const target = !multiDeviceEnabled;
-            if (target && !confirm('Çoklu mod açıldığında yalnız doğrulanmış etkin cihazlara LED verisi gönderilir. Devam edilsin mi?')) return;
-            try {
-                const result = await api.setMultiDeviceMode(target);
-                if (!result.success) throw new Error(result.message || 'Çoklu mod değiştirilemedi');
-                multiDeviceEnabled = result.multi_device_enabled;
-                renderDevices();
-                showToast(multiDeviceEnabled ? 'Çoklu mod etkinleştirildi' : 'Tekli güvenli moda dönüldü', 'success');
-            } catch (error) {
-                showToast(error.message || 'Çoklu mod değiştirilemedi', 'error');
-            }
-        }
-
-        function startNewDevice() {
-            setDeviceForm();
-        }
-
-        function getDevicePayload() {
-            return {
-                name: deviceFormValue('device-name').trim(),
-                ip: deviceFormValue('device-ip').trim(),
-                port: Number(deviceFormValue('device-port', 7777)),
-                monitor_index: Number(deviceFormValue('device-monitor-index', 1)),
-                leds: {
-                    top: Number(deviceFormValue('device-top-leds', 0)),
-                    bottom: Number(deviceFormValue('device-bottom-leds', 0)),
-                    left: Number(deviceFormValue('device-left-leds', 0)),
-                    right: Number(deviceFormValue('device-right-leds', 0)),
-                },
-            };
-        }
-
-        async function saveDevice() {
-            const id = deviceFormValue('device-id');
-            try {
-                const result = id ? await api.updateDevice(id, getDevicePayload()) : await api.createDevice(getDevicePayload());
-                if (!result.success) throw new Error(result.message || 'Cihaz kaydedilemedi');
-                showToast(id ? 'Pasif cihaz güncellendi' : 'Pasif cihaz eklendi', 'success');
-                await fetchDevices();
-                setDeviceForm(result.device);
-            } catch (error) {
-                showToast(error.message || 'Cihaz kaydedilemedi', 'error');
-            }
-        }
-
-        async function deleteSelectedDevice() {
-            const id = deviceFormValue('device-id');
-            if (!id || id === 'legacy-primary' || !confirm('Bu pasif cihaz silinsin mi?')) return;
-            try {
-                const result = await api.deleteDevice(id);
-                if (!result.success) throw new Error(result.message || 'Cihaz silinemedi');
-                showToast('Pasif cihaz silindi', 'success');
-                startNewDevice();
-                await fetchDevices();
-            } catch (error) {
-                showToast(error.message || 'Cihaz silinemedi', 'error');
-            }
-        }
-
-        async function fetchStatusData() {
-            try {
-                const status = await api.getStatus();
-                updateUI(status);
-            } catch (error) {
-                renderConnection(els, { connectivity: { state: 'backend_unavailable' } });
-            }
-        }
-
-        function showDashboard() {
-            document.querySelectorAll('.nav-item').forEach(item => item.classList.remove('active'));
-            const dashboard = document.querySelector('.nav-item');
-            if (dashboard) dashboard.classList.add('active');
-            const main = document.querySelector('.main-content');
-            if (main) main.scrollTop = 0;
-            fetchStatus();
-        }
-
-        // --- Status Update ---
-        let connectionTarget = '';
-        let connectionTestRequest = 0;
-
-        function updateFpsColor(fps, targetFps = 60) {
-            const circle = document.querySelector('.stat-circle');
-            if (!circle) return;
-            circle.classList.remove('fps-good', 'fps-warn', 'fps-bad');
-            
-            // Hedefe göre performans oranı (0.0 - 1.0)
-            const ratio = targetFps > 0 ? (fps / targetFps) : 0;
-            
-            // Daireyi doldurma yüzdesi (0 - 100)
-            const pct = Math.min(100, Math.round(ratio * 100));
-            circle.style.setProperty('--pct', pct);
-            
-            if (ratio >= 0.85)      circle.classList.add('fps-good');
-            else if (ratio >= 0.60) circle.classList.add('fps-warn');
-            else                    circle.classList.add('fps-bad');
-        }
-
-        function updateUI(status) {
-            applyMonitorSnapshot(status);
-
-            renderConnection(els, status);
-            const target = JSON.stringify([status.wemos_ip || '', status.wemos_port || 7777]);
-            if (target !== connectionTarget) {
-                connectionTarget = target;
-                connectionTestRequest++;
-                document.getElementById('connection-test-details').classList.remove('show');
-            }
-
-            els.wemosIp.textContent = status.wemos_ip || '-';
-            els.wemosPort.textContent = status.wemos_port || '-';
-            els.localIp.textContent = status.local_ip || '-';
-
-            // Performans
-            const fps = status.actual_fps ? parseFloat(status.actual_fps) : 0;
-            els.fpsVal.textContent = fps.toFixed(1);
-            updateFpsColor(fps, status.fps || 60);
-            els.packetsSent.textContent = status.packets_sent || '0';
-            const errCount = status.errors || 0;
-            els.errorCount.textContent = errCount;
-            els.errorCount.style.color = errCount > 0 ? 'var(--danger-color)' : 'var(--text-muted)';
-
-            // Son hata satırı
-            const lastErrorRow = document.getElementById('last-error-row');
-            const lastErrorText = document.getElementById('last-error-text');
-            if (errCount > 0 && status.last_error) {
-                lastErrorRow.style.display = '';
-                lastErrorText.textContent = status.last_error;
-                lastErrorText.title = status.last_error;
-            } else {
-                lastErrorRow.style.display = 'none';
-            }
-
-            // LED Bilgileri
-            // Kullanıcı giriş yaparken alanların üzerine eski bilgilerin yazılmasını önlüyoruz (isEditingMode)
-            if (!isEditingMode) {
-                els.totalLeds.textContent = status.total_leds || '0';
-                updateEstimatedAmper(); // Amper bilgisini yenile
-                if (status.top_leds !== undefined && document.activeElement !== els.topLeds) els.topLeds.value = status.top_leds;
-                if (status.bottom_leds !== undefined && document.activeElement !== els.bottomLeds) els.bottomLeds.value = status.bottom_leds;
-                if (status.left_leds !== undefined && document.activeElement !== els.leftLeds) els.leftLeds.value = status.left_leds;
-                if (status.right_leds !== undefined && document.activeElement !== els.rightLeds) els.rightLeds.value = status.right_leds;
-                if (status.edge_width !== undefined && document.activeElement !== els.edgeWidth) els.edgeWidth.value = status.edge_width;
-                if (status.edge_offset !== undefined && document.activeElement !== els.edgeOffset) els.edgeOffset.value = status.edge_offset;
-
-                if (status.led_monitor_index !== undefined && els.ledMonitorIndex && document.activeElement !== els.ledMonitorIndex && !isEditingMode
-                    && Array.from(els.ledMonitorIndex.options).some(option => option.value === String(status.led_monitor_index))) {
-                    els.ledMonitorIndex.value = status.led_monitor_index;
-                }
-            }
-
-            // Checkbox ve renk seçici gibi alanlarda isEditingMode yetersiz kalabilir, bunlara doğrudan müdahale edelim
-            if (status.idle_mode !== undefined && els.idleMode && document.activeElement !== els.idleMode && !isEditingMode) els.idleMode.checked = status.idle_mode;
-            
-            if (status.idle_use_windows_color !== undefined && els.idleUseWindowsColor && document.activeElement !== els.idleUseWindowsColor && !isEditingMode) {
-                els.idleUseWindowsColor.checked = status.idle_use_windows_color;
-                if (els.idleColor) {
-                    els.idleColor.disabled = status.idle_use_windows_color;
-                    els.idleColor.style.opacity = status.idle_use_windows_color ? '0.3' : '1';
-                }
-            }
-            
-            if (status.idle_color !== undefined && els.idleColor && document.activeElement !== els.idleColor && !isEditingMode) els.idleColor.value = status.idle_color;
-            
-            if (status.idle_brightness !== undefined && els.idleBrightness && document.activeElement !== els.idleBrightness && !isEditingMode) {
-                els.idleBrightness.value = status.idle_brightness;
-                if (els.idleBrightnessVal) els.idleBrightnessVal.textContent = status.idle_brightness + '%';
-            }
-            
-            if (status.fullscreen_max_brightness !== undefined && els.fullscreenMaxBrightness && document.activeElement !== els.fullscreenMaxBrightness && !isEditingMode) {
-                els.fullscreenMaxBrightness.value = status.fullscreen_max_brightness;
-                if (els.fullscreenMaxBrightnessVal) els.fullscreenMaxBrightnessVal.textContent = status.fullscreen_max_brightness;
-            }
-
-            if (status.fps !== undefined && els.targetFps && document.activeElement !== els.targetFps && !isEditingMode) {
-                els.targetFps.value = status.fps;
-                if (els.targetFpsVal) els.targetFpsVal.textContent = status.fps + ' FPS';
-                const display = document.getElementById('target-fps-display');
-                if (display) display.textContent = status.fps;
-            }
-        }  // updateUI sonu
-
-        // --- Bağlantı Testi ---
-        async function testWemosConnection() {
-            const details = document.getElementById('connection-test-details');
-            const udpEl = document.getElementById('udp-test-result');
-            const httpEl = document.getElementById('http-test-result');
-            const msgEl = document.getElementById('connection-test-message');
-
-            if (!details) return;
-            details.classList.add('show');
-            const request = ++connectionTestRequest;
-
-            // Sıfırla
-            udpEl.className = 'test-value checking';
-            udpEl.textContent = 'Test ediliyor...';
-            httpEl.className = 'test-value checking';
-            httpEl.textContent = 'Test ediliyor...';
-            msgEl.textContent = 'Test ediliyor...';
-
-            try {
-                const result = await api.testWemosConnection();
-                if (request !== connectionTestRequest) return;
-                const udpOk = result.udp_ok;
-                const httpOk = result.http_ok;
-                const msg = result.message || '';
-
-                udpEl.className = `test-value ${udpOk ? 'ok' : 'fail'}`;
-                udpEl.textContent = udpOk ? '✅ Başarılı' : '❌ Başarısız';
-
-                httpEl.className = `test-value ${httpOk ? 'ok' : 'fail'}`;
-                httpEl.textContent = httpOk ? '✅ Başarılı' : '❌ Başarısız';
-
-                msgEl.textContent = msg;
-
-                // Only /api/status owns the main indicator; a test response can be stale.
-                if (result.applied === false) msgEl.textContent = 'Test sonucu güncelliğini yitirdi; güncel durum kontrol ediliyor.';
-                await fetchStatus();
-            } catch (e) {
-                if (request !== connectionTestRequest) return;
-                udpEl.className = 'test-value fail';
-                udpEl.textContent = '❌ Başarısız';
-                httpEl.className = 'test-value fail';
-                httpEl.textContent = '❌ Başarısız';
-                msgEl.textContent = 'Test hatası: ' + e.message;
-                await fetchStatus();
-            }
-        }
-
-        // --- Actions ---
-        async function forceScan() {
-            showToast('Ağ taranıyor... Bu birkaç saniye sürebilir.', 'info');
-            try {
-                const result = await api.scanNetwork();
-                if (result.found) {
-                    if (els.manualIpInput) els.manualIpInput.value = result.ip || '';
-                    showToast(`✅ ${result.message || 'Cihaz bulundu: ' + result.ip}`, 'success');
-                    // Durumu hemen güncelle (backend IP'yi zaten kaydetti)
-                    setTimeout(fetchStatus, 500);
-                    setTimeout(fetchStatus, 2000);
-                    setTimeout(fetchStatus, 5000);
-                } else {
-                    showToast('❌ Cihaz bulunamadı. Wemos açık ve aynı ağda olduğundan emin olun.', 'error');
-                }
-            } catch (e) { showToast('Tarama hatası: Zaman aşımı olabilir.', 'error'); }
-        }
-
-        async function saveConfig(silent = false) {
-            if (!silent) showToast('Ayarlar kaydediliyor...', 'info');
-            try {
-                const config = {
-                    top_leds: parseInt(els.topLeds.value) || 0,
-                    bottom_leds: parseInt(els.bottomLeds.value) || 0,
-                    left_leds: parseInt(els.leftLeds.value) || 0,
-                    right_leds: parseInt(els.rightLeds.value) || 0,
-                    edge_width: parseInt(els.edgeWidth.value) || 20,
-                    edge_offset: parseInt(els.edgeOffset.value) || 0,
-                    idle_mode: els.idleMode && els.idleMode.checked,
-                    idle_use_windows_color: els.idleUseWindowsColor && els.idleUseWindowsColor.checked,
-                    idle_color: (els.idleColor && els.idleColor.value) || '#ff0000',
-                    idle_brightness: (els.idleBrightness && parseInt(els.idleBrightness.value)) || 50,
-                    fullscreen_max_brightness: (els.fullscreenMaxBrightness && parseInt(els.fullscreenMaxBrightness.value)) || 255,
-                    fps: (els.targetFps && parseInt(els.targetFps.value)) || 60,
-                    wemos_port: parseInt(els.wemosPort?.textContent) || 7777,
-                    led_monitor_index: parseInt(els.ledMonitorIndex?.value) || 1
-                };
-
-                const manualIp = els.manualIpInput && els.manualIpInput.value.trim();
-                if (manualIp) {
-                    config.wemos_ip = manualIp;
-                }
-
-                // LED sayısı sınır kontrolü (firmware limiti: 74)
-                const totalLeds = (config.top_leds || 0) + (config.bottom_leds || 0) + (config.left_leds || 0) + (config.right_leds || 0);
-                if (totalLeds > MAX_LED_COUNT) {
-                    showToast(`❌ Toplam LED sayısı (${totalLeds}) firmware limitini (${MAX_LED_COUNT}) aşıyor!`, 'error');
-                    return;
-                }
-
-                await api.saveConfig(config);
-                if (!silent) showToast('Ayarlar başarıyla kaydedildi', 'success');
-                // Kaydettikten sonra backend'in yeni durumu yansıtmasını bekle
-                setTimeout(fetchStatus, 500);
-            } catch (e) {
-                console.error(e);
-                if (!silent) showToast('Kayıt başarısız', 'error');
-            }
-        }
-
-        async function restartApp() {
-            showToast('Uygulama yeniden başlatılıyor...', 'warning');
-            await api.restartApp();
-        }
-
-        async function restartWemos() {
-            showToast('Wemos yeniden başlatılıyor...', 'info');
-            await api.restartWemos();
-        }
-
-        async function toggleSleep() {
-            showToast('Uyku modu değiştiriliyor...', 'info');
-            await api.toggleSleep();
-        }
-
-        async function resetWemosWifi() {
-            if (!confirm('⚠️ Wemos Wi-Fi ayarları sıfırlanacak ve hotspot moduna dönecek. Emin misiniz?')) return;
-            try {
-                const result = await api.resetWemosWifi();
-                showToast(result.message, result.success ? 'success' : 'error');
-            } catch (e) { showToast('Hata oluştu', 'error'); }
-        }
-
-        async function saveManualIp(silent = false) {
-            const ip = els.manualIpInput.value.trim();
-            if (!ip) {
-                if (!silent) showToast('❌ Lütfen bir IP adresi girin.', 'error');
-                return;
-            }
-            // Basit IP format kontrolü
-            const ipRegex = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
-            if (!ipRegex.test(ip)) {
-                if (!silent) showToast('❌ Geçersiz IP formatı. Örn: 33.33.33.8', 'error');
-                return;
-            }
-            if (!silent) showToast(`IP ${ip} olarak kaydediliyor...`, 'info');
-            try {
-                const config = { wemos_ip: ip };
-                const result = await api.saveConfig(config);
-                if (result.success) {
-                    if (!silent) showToast(`✅ IP başarıyla ${ip} olarak kaydedildi!`, 'success');
-                    setTimeout(fetchStatus, 1000);
-                    setTimeout(fetchStatus, 4000);
-                } else {
-                    if (!silent) showToast('❌ Kayıt başarısız: ' + (result.message || ''), 'error');
-                }
-            } catch (e) {
-                if (!silent) showToast('❌ Kayıt hatası oluştu', 'error');
-            }
-        }
-
-        // --- OTA Firmware Upload ---
-        async function uploadFirmware() {
-            const fileInput = document.getElementById('firmware-file');
-            const file = fileInput.files[0];
-            
-            if (!file) {
-                showToast('Lütfen bir .bin dosyası seçin.', 'error');
-                return;
-            }
-            
-            if (!file.name.endsWith('.bin')) {
-                showToast('Sadece .bin dosyaları yüklenebilir.', 'error');
-                return;
-            }
-            
-            const btn = document.getElementById('btn-upload-firmware');
-            const progressDiv = document.getElementById('ota-progress');
-            const progressBar = document.getElementById('ota-progress-bar');
-            const statusText = document.getElementById('ota-status');
-            
-            // UI güncelle
-            btn.disabled = true;
-            btn.textContent = '⏳ Yükleniyor...';
-            progressDiv.style.display = 'block';
-            progressBar.style.width = '0%';
-            statusText.textContent = 'Firmware dosyası okunuyor...';
-            
-            try {
-                const arrayBuffer = await file.arrayBuffer();
-                const uint8Array = new Uint8Array(arrayBuffer);
-                
-                progressBar.style.width = '30%';
-                statusText.textContent = 'Wemos\'a gönderiliyor...';
-
-                // Doğrudan Wemos'a HTTP ile gönder (OTA kilitli anahtar gönderme)
-                const wemosIp = document.getElementById('wemos-ip').textContent;
-                if (!wemosIp || wemosIp === '-') {
-                    throw new Error('Wemos IP adresi bulunamadı');
-                }
-                
-                const formData = new FormData();
-                formData.append('firmware', file);
-                
-                progressBar.style.width = '50%';
-                statusText.textContent = 'Firmware yükleniyor... Lütfen bekleyin.';
-                
-                try {
-                    const response = await fetch(`http://${wemosIp}/firmware`, {
-                        method: 'POST',
-                        body: formData
-                    });
-                    
-                    progressBar.style.width = '100%';
-                    statusText.textContent = '✅ Firmware başarıyla yüklendi! Wemos yeniden başlatılıyor...';
-                    showToast('✅ Firmware güncellendi! Wemos yeniden başlatılıyor...', 'success');
-                } catch (fetchErr) {
-                    // Wemos güncelleme sonrası restart oluyor, bağlantı kopabilir - bu normal
-                    progressBar.style.width = '100%';
-                    statusText.textContent = '✅ Firmware gönderildi! Wemos yeniden başlatılıyor...';
-                    showToast('✅ Firmware gönderildi, Wemos yeniden başlatılıyor...', 'success');
-                }
-                
-                // 10 saniye sonra durumu güncelle
-                setTimeout(() => {
-                    progressDiv.style.display = 'none';
-                    fetchStatus();
-                }, 10000);
-                
-            } catch (error) {
-                progressBar.style.width = '0%';
-                statusText.textContent = '❌ Hata: ' + error.message;
-                showToast('Firmware yükleme hatası: ' + error.message, 'error');
-            } finally {
-                btn.disabled = false;
-                btn.textContent = '🚀 Firmware Yükle';
-            }
-        }
-
-        // --- Log Panel ---
-        let _logCache = [];
-        let _logPanelOpen = false;
-
-        async function fetchLogsData() {
-            if (!_logPanelOpen) return;
-            try {
-                const data = await api.getLogs();
-                if (data.logs) renderLogs(data.logs);
-            } catch (e) {
-                const container = document.getElementById('log-entries');
-                if (container) {
-                    container.innerHTML = `<div style="color:var(--danger-color);font-size:12px;padding:8px;">❌ Loglar yüklenemedi: ${e.message}</div>`;
-                }
-            }
-        }
-
-        function renderLogs(logs) {
-            _logCache = logs;
-            const container = document.getElementById('log-entries');
-            if (!container) return;
-            container.innerHTML = '';
-            logs.forEach(entry => {
-                const el = document.createElement('div');
-                el.className = 'log-entry';
-                el.innerHTML = `<span class="log-time">${entry.time}</span><span class="log-level ${entry.level}">${entry.level}</span><span class="log-msg">${entry.msg.replace(/</g,'&lt;')}</span>`;
-                container.appendChild(el);
-            });
-            const autoScroll = document.getElementById('log-autoscroll');
-            if (autoScroll && autoScroll.checked) container.scrollTop = container.scrollHeight;
-        }
-
-        function showLogsPanel() {
-            _logPanelOpen = true;
-            document.getElementById('log-panel').classList.add('open');
-            fetchLogs();
-        }
-
-        function closeLogsPanel() {
-            _logPanelOpen = false;
-            document.getElementById('log-panel').classList.remove('open');
-        }
-
-        function clearLogs() {
-            _logCache = [];
-            const container = document.getElementById('log-entries');
-            if (container) container.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:8px;">Loglar temizlendi.</div>';
-        }
-
-        function downloadLogs() {
-            const lines = _logCache.map(e => `[${e.time}] [${e.level}] ${e.msg}`).join('\n');
-            const blob = new Blob([lines], {type: 'text/plain'});
-            const a = document.createElement('a');
-            a.href = URL.createObjectURL(blob);
-            a.download = `luxedge_log_${new Date().toISOString().slice(0,19).replace(/:/g,'-')}.txt`;
-            a.click();
-        }
-
-        // --- Loop ---
-        document.addEventListener('visibilitychange', () => poller.refresh());
-        if (window.luxedge && window.luxedge.onWindowVisibility) {
-            window.luxedge.onWindowVisibility(visible => {
-                electronVisible = visible;
-                poller.refresh();
-            });
-        }
-        poller.refresh();
-        startNewDevice();
-        fetchDevices();
-        fetchStatus();
-
-    </script>
+    <script src="app.js"></script>
 </body>
 
 </html>

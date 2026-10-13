@@ -134,6 +134,17 @@ CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ambiligh
 MULTI_DEVICE_CONFIG_SCHEMA_VERSION = 2
 LEGACY_PRIMARY_DEVICE_ID = "legacy-primary"
 
+# Cihaz rolleri:
+#   ambilight : Dört kenar düzeni; Wemos'taki tüm şeritler tek zincir gibi akış alır.
+#   strips    : Her fiziksel şerit ayrı görev alır (ekran kenarı akışı, sabit renk, animasyon).
+DEVICE_ROLES = ("ambilight", "strips")
+# Firmware'deki SegmentMode isimleriyle birebir aynı olmalı (wemos_code.ino).
+STRIP_MODES = ("stream", "off", "solid", "breathe", "rainbow", "chase", "twinkle")
+LOCAL_STRIP_MODES = tuple(mode for mode in STRIP_MODES if mode != "stream")
+EDGES = ("top", "bottom", "left", "right")
+FIRMWARE_STRIP_COUNT = 4
+FIRMWARE_MAX_LED_COUNT = 170
+
 import shutil
 
 def get_config_path():
@@ -259,8 +270,137 @@ def normalize_config_for_multi_device(config):
     if not isinstance(normalized.get("wemos_devices"), list):
         primary_device = legacy_config_to_primary_device(normalized)
         normalized["wemos_devices"] = [primary_device] if primary_device else []
+    else:
+        # Ana Wemos kaydı tekli panelden yönetilir; diske yazılmış eski bir
+        # kopyası varsa IP/LED alanlarını her zaman tekli ayarlardan tazele.
+        primary_device = legacy_config_to_primary_device(normalized)
+        for index, device in enumerate(normalized["wemos_devices"]):
+            if not isinstance(device, dict) or device.get("id") != LEGACY_PRIMARY_DEVICE_ID:
+                continue
+            if primary_device is None:
+                continue
+            refreshed = dict(device)
+            for key in ("ip", "port", "monitor_index", "leds"):
+                refreshed[key] = primary_device[key]
+            normalized["wemos_devices"][index] = refreshed
 
     return normalized
+
+
+def _hex_color(value, field_name):
+    text = str(value or "").strip().lower()
+    if not text.startswith("#"):
+        text = "#" + text
+    if len(text) != 7 or any(ch not in "0123456789abcdef" for ch in text[1:]):
+        raise ValueError(f"{field_name} #rrggbb biçiminde olmalı")
+    return text
+
+
+def validate_strip_settings(payload, index=None):
+    """Tek bir şeridin PC tarafındaki ayarlarını doğrula.
+
+    led_count ve pin firmware'den gelir (hotspot kurulumunda seçilir); burada
+    yalnız saklanır. Mod, renk, parlaklık, hız ve akış kaynağı kullanıcı seçimidir.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("Şerit verisi JSON nesnesi olmalı")
+    strip_index = _device_integer(payload.get("index", index), "strips.index", 1, FIRMWARE_STRIP_COUNT)
+    mode = str(payload.get("mode", "stream")).strip().lower()
+    if mode not in STRIP_MODES:
+        raise ValueError(f"Şerit {strip_index} için geçersiz mod")
+    edge = str(payload.get("edge", "top")).strip().lower()
+    if edge not in EDGES:
+        raise ValueError(f"Şerit {strip_index} için geçersiz kenar")
+    reverse = payload.get("reverse", False)
+    if not isinstance(reverse, bool):
+        raise ValueError("reverse doğru veya yanlış olmalı")
+    pin = str(payload.get("pin", "")).strip().upper()
+    if len(pin) > 3:
+        raise ValueError("pin en fazla 3 karakter olabilir")
+    return {
+        "index": strip_index,
+        "led_count": _device_integer(payload.get("led_count", 0), "strips.led_count", 0, FIRMWARE_MAX_LED_COUNT),
+        "pin": pin,
+        "mode": mode,
+        "color": _hex_color(payload.get("color", "#ff7800"), "strips.color"),
+        "brightness": _device_integer(payload.get("brightness", 128), "strips.brightness", 0, 255),
+        "speed": _device_integer(payload.get("speed", 50), "strips.speed", 1, 100),
+        "monitor_index": _device_integer(payload.get("monitor_index", 1), "strips.monitor_index", 1),
+        "edge": edge,
+        "reverse": reverse,
+    }
+
+
+def validate_strips(payload):
+    if payload is None:
+        return []
+    if not isinstance(payload, list):
+        raise ValueError("strips bir liste olmalı")
+    strips = []
+    seen = set()
+    for position, item in enumerate(payload, start=1):
+        strip = validate_strip_settings(item, index=position)
+        if strip["index"] in seen:
+            raise ValueError(f"Şerit {strip['index']} birden fazla kez tanımlı")
+        seen.add(strip["index"])
+        strips.append(strip)
+    strips.sort(key=lambda strip: strip["index"])
+    return strips
+
+
+def device_role(device):
+    role = device.get("role", "ambilight") if isinstance(device, dict) else "ambilight"
+    return role if role in DEVICE_ROLES else "ambilight"
+
+
+def device_strips(device):
+    """Cihazın şerit listesini (eksikse boş) döndür."""
+    strips = device.get("strips") if isinstance(device, dict) else None
+    return strips if isinstance(strips, list) else []
+
+
+def stream_strips(device):
+    """Ekran akışı alan şeritler (firmware sırasıyla)."""
+    return [strip for strip in device_strips(device)
+            if strip.get("mode", "stream") == "stream" and int(strip.get("led_count", 0)) > 0]
+
+
+def expected_stream_led_count(device):
+    """PC'nin bu cihaza her karede göndereceği LED sayısı."""
+    if device_role(device) == "strips":
+        return sum(int(strip.get("led_count", 0)) for strip in stream_strips(device))
+    leds = device.get("leds", {}) if isinstance(device, dict) else {}
+    return sum(int(leds.get(edge, 0)) for edge in EDGES)
+
+
+def merge_firmware_strips(device, firmware_status):
+    """Firmware'in bildirdiği şerit sayısı/pin bilgisini PC kaydına işle.
+
+    Kullanıcının seçtiği mod/renk korunur; PC'de kaydı olmayan şeritler için
+    firmware'in o anki modu (varsa) devralınır. Diske yazmaz.
+    """
+    merged = copy.deepcopy(device)
+    existing = {int(strip.get("index", 0)): strip for strip in device_strips(device)}
+    result = []
+    for firmware_strip in firmware_status.get("strips", []) or []:
+        if not isinstance(firmware_strip, dict):
+            continue
+        try:
+            index = int(firmware_strip.get("index", 0))
+        except (TypeError, ValueError):
+            continue
+        if not 1 <= index <= FIRMWARE_STRIP_COUNT or not firmware_strip.get("enabled"):
+            continue
+        strip = dict(existing.get(index) or {"index": index})
+        strip["led_count"] = int(firmware_strip.get("led_count", 0) or 0)
+        strip["pin"] = str(firmware_strip.get("led_pin", "") or "")
+        if index not in existing:
+            for key in ("mode", "color", "brightness", "speed"):
+                if key in firmware_strip:
+                    strip[key] = firmware_strip[key]
+        result.append(validate_strip_settings(strip, index=index))
+    merged["strips"] = result
+    return merged
 
 
 def _device_integer(value, field_name, minimum=0, maximum=None):
@@ -293,10 +433,12 @@ def validate_wemos_device(payload, device_id=None, default_enabled=False):
         raise ValueError("Geçerli bir IPv4 adresi girin")
 
     role = payload.get("role", "ambilight")
-    if role != "ambilight":
-        raise ValueError("Bu sürüm yalnız ambilight cihazlarını destekler")
+    if role not in DEVICE_ROLES:
+        raise ValueError("Cihaz rolü 'ambilight' veya 'strips' olmalı")
 
     leds_payload = payload.get("leds", {})
+    if leds_payload is None:
+        leds_payload = {}
     if not isinstance(leds_payload, dict):
         raise ValueError("leds nesnesi gerekli")
     leds = {
@@ -308,6 +450,11 @@ def validate_wemos_device(payload, device_id=None, default_enabled=False):
     if not isinstance(enabled, bool):
         raise ValueError("enabled doğru veya yanlış olmalı")
 
+    strips = validate_strips(payload.get("strips"))
+    total_strip_leds = sum(strip["led_count"] for strip in strips)
+    if total_strip_leds > FIRMWARE_MAX_LED_COUNT:
+        raise ValueError(f"Şerit LED toplamı {FIRMWARE_MAX_LED_COUNT} değerini aşamaz")
+
     return {
         "id": device_id or uuid.uuid4().hex,
         "name": name,
@@ -316,6 +463,7 @@ def validate_wemos_device(payload, device_id=None, default_enabled=False):
         "role": role,
         "monitor_index": _device_integer(payload.get("monitor_index", 1), "monitor_index", 1),
         "leds": leds,
+        "strips": strips,
         "enabled": enabled,
     }
 
@@ -1208,11 +1356,28 @@ def grab_edge_colors(top_leds, bottom_leds, left_leds, right_leds, edge_width, e
 
 
 
-def build_device_frame(device, edge_width, edge_offset, capture):
+def build_device_frame(device, edge_width, edge_offset, capture, brightness=255):
     """Bir cihazın atanmış monitörü için UDP RGB paketini hesapla.
 
     Bu yardımcı yalnız paket üretir; gönderim ve bağlantı kontrolü yapmaz.
+    Şerit bazlı cihazlarda yalnız 'stream' modundaki şeritler, firmware
+    sırasıyla art arda eklenir; yerel modlar cihaz üzerinde çalışır.
     """
+    if device_role(device) == "strips":
+        parts = []
+        for strip in stream_strips(device):
+            counts = {edge: 0 for edge in EDGES}
+            counts[strip.get("edge", "top")] = int(strip.get("led_count", 0))
+            frame = grab_edge_frame(
+                counts["top"], counts["bottom"], counts["left"], counts["right"],
+                edge_width, edge_offset, capture,
+                monitor_index=int(strip.get("monitor_index", 1)), brightness=brightness,
+            )
+            if strip.get("reverse"):
+                frame = reverse_rgb_frame(frame)
+            parts.append(frame)
+        return b"".join(parts)
+
     leds = device.get("leds", {})
     return grab_edge_frame(
         int(leds.get("top", 0)),
@@ -1223,7 +1388,15 @@ def build_device_frame(device, edge_width, edge_offset, capture):
         edge_offset,
         capture,
         monitor_index=int(device.get("monitor_index", 1)),
+        brightness=brightness,
     )
+
+
+def reverse_rgb_frame(frame):
+    """RGB üçlülerinin sırasını ters çevir (şerit ters takılmışsa)."""
+    if len(frame) < 6:
+        return bytes(frame)
+    return np.frombuffer(frame, dtype=np.uint8).reshape(-1, 3)[::-1].tobytes()
 
 
 def grab_edge_frame(top, bottom, left, right, width, offset, capture, monitor_index, brightness=255):
@@ -1362,6 +1535,12 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
                 self.handle_devices_mode()
             elif self.path == '/api/devices':
                 self.handle_device_create()
+            elif self._device_action_from_path() is not None:
+                device_id, action = self._device_action_from_path()
+                if action == 'sync':
+                    self.handle_device_sync(device_id)
+                else:
+                    self.send_error(404)
             elif self.path == '/api/restart':
                 self.handle_restart()
             elif self.path == '/api/wemos/restart':
@@ -1410,6 +1589,17 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
             return None
         device_id = urllib.parse.unquote(path[len(prefix):])
         return device_id if device_id and "/" not in device_id else None
+
+    def _device_action_from_path(self):
+        """/api/devices/{id}/{action} -> (id, action); eşleşmezse None."""
+        path = urllib.parse.urlparse(self.path).path
+        prefix = "/api/devices/"
+        if not path.startswith(prefix):
+            return None
+        parts = path[len(prefix):].split("/")
+        if len(parts) != 2 or not parts[0] or not parts[1]:
+            return None
+        return urllib.parse.unquote(parts[0]), parts[1]
     
     def serve_html(self):
         """Ana HTML sayfasını sun"""
@@ -1458,11 +1648,14 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
     def handle_devices_list(self):
         """Pasif çoklu-cihaz kayıtlarını döndür; tekli config'i değiştirme."""
         config = normalize_config_for_multi_device(load_config() or {})
+        devices = [dict(device, role=device_role(device), strips=device_strips(device))
+                   for device in config["wemos_devices"] if isinstance(device, dict)]
         self._safe_send_json({
             "success": True,
             "schema_version": config["schema_version"],
             "multi_device_enabled": config["multi_device_enabled"],
-            "devices": config["wemos_devices"],
+            "strip_modes": list(STRIP_MODES),
+            "devices": devices,
         })
 
     def handle_devices_scan(self):
@@ -1474,6 +1667,7 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
         """Kayıtlı cihazların firmware LED toplamlarını doğrular."""
         config = normalize_config_for_multi_device(load_config() or {})
         validations = [get_device_validation(device) for device in config["wemos_devices"]]
+        invalidate_device_validation()
         self._safe_send_json({"success": True, "devices": validations})
 
     def handle_devices_mode(self):
@@ -1482,6 +1676,7 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
             config = set_multi_device_mode(load_config() or {}, payload.get("enabled"))
             if not save_config(config):
                 raise ValueError("Çoklu mod kaydedilemedi")
+            invalidate_device_validation()
             result = {"success": True, "multi_device_enabled": config["multi_device_enabled"]}
         except Exception as e:
             result = {"success": False, "message": str(e)}
@@ -1502,6 +1697,7 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
             config, device = update_wemos_device(load_config() or {}, device_id, self._read_json_body())
             if not save_config(config):
                 raise ValueError("Cihaz kaydedilemedi")
+            invalidate_device_validation(device_id)
             result = {"success": True, "device": device, "message": "Cihaz güncellendi."}
         except Exception as e:
             result = {"success": False, "message": str(e)}
@@ -1512,7 +1708,24 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
             config = delete_wemos_device(load_config() or {}, device_id)
             if not save_config(config):
                 raise ValueError("Cihaz kaydedilemedi")
+            invalidate_device_validation(device_id)
             result = {"success": True, "message": "Cihaz silindi."}
+        except Exception as e:
+            result = {"success": False, "message": str(e)}
+        self._safe_send_json(result)
+
+    def handle_device_sync(self, device_id):
+        """Wemos'tan şerit bilgisini al, ayarları gönder ve kaydı güncelle."""
+        try:
+            try:
+                payload = self._read_json_body()
+            except ValueError:
+                payload = {}
+            push = payload.get("push", True) if isinstance(payload, dict) else True
+            config, device, outcome = sync_wemos_device(load_config() or {}, device_id, push=bool(push))
+            if not save_config(config):
+                raise ValueError("Cihaz kaydedilemedi")
+            result = {"success": True, "device": device, **outcome}
         except Exception as e:
             result = {"success": False, "message": str(e)}
         self._safe_send_json(result)
@@ -1896,27 +2109,155 @@ def get_wemos_status(ip, timeout=2):
         return None
 
 
-def get_device_validation(device, timeout=2):
-    """PC kenar LED toplamını Wemos firmware /status değeriyle karşılaştır."""
-    leds = device.get("leds", {}) if isinstance(device, dict) else {}
-    expected_led_count = sum(int(leds.get(edge, 0)) for edge in ("top", "bottom", "left", "right"))
-    status = get_wemos_status(device.get("ip", ""), timeout=timeout)
-    firmware_led_count = status.get("led_count") if status else None
+def firmware_supports_segments(status):
+    return isinstance(status, dict) and bool(status.get("segments_supported")) and "stream_led_count" in status
+
+
+def get_device_validation(device, timeout=2, status=None):
+    """PC'nin göndereceği akış LED sayısını Wemos firmware değeriyle karşılaştır.
+
+    Yeni firmware (1.7+) 'stream_led_count' bildirir: yalnız akış modundaki
+    şeritlerin toplamı. Eski firmware için 'led_count' kullanılır.
+    """
+    device = device if isinstance(device, dict) else {}
+    role = device_role(device)
+    expected_led_count = expected_stream_led_count(device)
+    if status is None:
+        status = get_wemos_status(device.get("ip", ""), timeout=timeout)
+    supports_segments = firmware_supports_segments(status)
+    firmware_led_count = None
+    if status:
+        firmware_led_count = status.get("stream_led_count") if supports_segments else status.get("led_count")
     compatible = isinstance(firmware_led_count, int) and firmware_led_count == expected_led_count
+    needs_segments = role == "strips" and any(
+        strip.get("mode", "stream") != "stream" for strip in device_strips(device))
     if status is None:
         message = "Wemos /status erişilemiyor"
+    elif needs_segments and not supports_segments:
+        compatible = False
+        message = "Firmware şerit modlarını desteklemiyor; 1.7.0 veya üstünü yükleyin"
     elif compatible:
-        message = "LED toplamı eşleşiyor"
+        message = "Akış LED sayısı eşleşiyor" if role == "strips" else "LED toplamı eşleşiyor"
     else:
         message = f"Uygulama: {expected_led_count}, firmware: {firmware_led_count} LED"
     return {
         "id": device.get("id"),
+        "role": role,
         "reachable": status is not None,
         "compatible": compatible,
         "expected_led_count": expected_led_count,
         "firmware_led_count": firmware_led_count,
+        "firmware_total_led_count": status.get("led_count") if status else None,
+        "firmware_version": status.get("firmware_version") if status else None,
+        "segments_supported": supports_segments,
+        "firmware_strips": (status.get("strips") if status else None) or [],
         "message": message,
     }
+
+
+def push_device_segments(device, save=True, timeout=3):
+    """Şerit mod/renk ayarlarını Wemos'a HTTP ile gönder (POST /segments).
+
+    Ambilight rolündeki cihazlarda tüm şeritler 'stream' moduna alınır; böylece
+    daha önce şerit bazlı kullanılmış bir Wemos tekrar tam zincir olarak çalışır.
+    Döner: (başarılı, mesaj, firmware_yanıtı|None)
+    """
+    fields = {"save": "1" if save else "0"}
+    if device_role(device) == "strips":
+        for strip in device_strips(device):
+            prefix = f"s{int(strip['index'])}_"
+            fields[prefix + "mode"] = strip.get("mode", "stream")
+            fields[prefix + "color"] = str(strip.get("color", "#ff7800")).lstrip("#")
+            fields[prefix + "brightness"] = str(int(strip.get("brightness", 128)))
+            fields[prefix + "speed"] = str(int(strip.get("speed", 50)))
+    else:
+        for index in range(1, FIRMWARE_STRIP_COUNT + 1):
+            fields[f"s{index}_mode"] = "stream"
+    try:
+        data = urllib.parse.urlencode(fields).encode("utf-8")
+        request = urllib.request.Request(f"http://{device.get('ip', '')}/segments", data=data, method="POST")
+        request.add_header("Content-Type", "application/x-www-form-urlencoded")
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = response.read().decode("utf-8", errors="ignore")
+        try:
+            parsed = json.loads(body)
+        except ValueError:
+            parsed = None
+        return True, "Şerit ayarları Wemos'a gönderildi", parsed
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", errors="ignore") if hasattr(error, "read") else str(error)
+        return False, f"Wemos ayarı reddetti: {detail.strip() or error}", None
+    except Exception as error:
+        return False, f"Wemos'a gönderilemedi: {error}", None
+
+
+def sync_wemos_device(config, device_id, push=True):
+    """Firmware şerit bilgisini al, PC kaydıyla birleştir ve ayarları Wemos'a yaz.
+
+    Diske yazmaz; (normalized_config, device, result) döndürür.
+    """
+    normalized = normalize_config_for_multi_device(config)
+    for index, existing in enumerate(normalized["wemos_devices"]):
+        if existing.get("id") != device_id:
+            continue
+        status = get_wemos_status(existing.get("ip", ""), timeout=3)
+        if status is None:
+            raise ValueError("Wemos /status erişilemiyor; IP ve ağ bağlantısını kontrol edin")
+        device = copy.deepcopy(existing)
+        if device_role(device) == "strips":
+            device = merge_firmware_strips(device, status)
+        push_ok, push_message, firmware_reply = (True, "Ayar gönderilmedi", None)
+        if push:
+            if firmware_supports_segments(status):
+                push_ok, push_message, firmware_reply = push_device_segments(device)
+                if push_ok and isinstance(firmware_reply, dict):
+                    # Doğrulamayı gönderim sonrası güncel firmware verisiyle yap.
+                    status = dict(status, **{key: firmware_reply[key] for key in ("strips", "stream_led_count", "led_count") if key in firmware_reply})
+            elif device_role(device) == "strips":
+                push_ok, push_message = False, "Firmware şerit modlarını desteklemiyor; 1.7.0 veya üstünü yükleyin"
+        normalized["wemos_devices"][index] = device
+        validation = get_device_validation(device, status=status)
+        invalidate_device_validation(device_id)
+        return normalized, device, {
+            "pushed": push_ok,
+            "message": push_message,
+            "validation": validation,
+        }
+    raise ValueError("Cihaz bulunamadı")
+
+
+# Worker tarafı doğrulama önbelleği: kare döngüsü her 3 saniyede HTTP beklemesin.
+_validation_cache = {}
+_validation_cache_lock = threading.Lock()
+VALIDATION_RETRY_SECONDS = 15.0
+
+
+def invalidate_device_validation(device_id=None):
+    with _validation_cache_lock:
+        if device_id is None:
+            _validation_cache.clear()
+        else:
+            _validation_cache.pop(device_id, None)
+
+
+def cached_device_validation(device, now=None):
+    """Aynı ayarla doğrulanmış cihazı tekrar sorgulama; başarısızları aralıklı dene."""
+    now = time.time() if now is None else now
+    signature = json.dumps({
+        "ip": device.get("ip"), "port": device.get("port"), "role": device_role(device),
+        "expected": expected_stream_led_count(device),
+        "strips": [(s.get("index"), s.get("mode"), s.get("led_count")) for s in device_strips(device)],
+    }, sort_keys=True, default=str)
+    device_id = device.get("id")
+    with _validation_cache_lock:
+        entry = _validation_cache.get(device_id)
+    if entry and entry["signature"] == signature:
+        if entry["result"]["compatible"] or now - entry["checked_at"] < VALIDATION_RETRY_SECONDS:
+            return entry["result"]
+    result = get_device_validation(device)
+    with _validation_cache_lock:
+        _validation_cache[device_id] = {"signature": signature, "result": result, "checked_at": now}
+    return result
 
 def probe_wemos(ip, port=7777, full=False):
     """None means HTTP was not tested, not that it failed."""
@@ -1935,13 +2276,13 @@ def test_wemos_connection(ip, port=7777):
     udp_ok, http_ok = probe_wemos(ip, port, full=True)
 
     if udp_ok and http_ok:
-        return True, True, f"✅ Her iki protokol da çalışıyor ({ip}:{port}, http://{ip}/status)"
+        return True, True, f"Her iki protokol de çalışıyor ({ip}:{port}, http://{ip}/status)"
     elif udp_ok:
-        return True, False, f"✅ UDP PING/PONG çalışıyor ({ip}:{port}), HTTP endpoint erişilemiyor"
+        return True, False, f"UDP PING/PONG çalışıyor ({ip}:{port}); HTTP /status erişilemiyor"
     elif http_ok:
-        return False, True, f"✅ HTTP endpoint çalışıyor ({ip}/status), UDP PING/PONG erişilemiyor"
+        return False, True, f"HTTP /status çalışıyor ({ip}); UDP PING/PONG yanıt vermiyor"
     else:
-        return False, False, f"❌ Wemos'a bağlanılamıyor ({ip}:{port})"
+        return False, False, f"Wemos'a bağlanılamıyor ({ip}:{port})"
 
 def wemos_connectivity_checker(ip, port, cancel_event=None):
     """Probe the current target; canceled/obsolete results cannot publish."""
@@ -2186,9 +2527,11 @@ def ambilight_worker(config):
                         for multi_device in multi_config["wemos_devices"]:
                             if not multi_device.get("enabled"):
                                 continue
-                            validation = get_device_validation(multi_device)
+                            validation = cached_device_validation(multi_device)
                             if validation["compatible"]:
-                                active_multi_devices.append(multi_device)
+                                # Akış LED'i olmayan şerit cihazları tamamen cihaz üzerinde çalışır.
+                                if expected_stream_led_count(multi_device) > 0:
+                                    active_multi_devices.append(multi_device)
                             else:
                                 log.warning(f"[MULTI] {multi_device['id']} devre dışı: {validation['message']}")
                     update_status("multi_device_enabled", multi_device_mode)
@@ -2227,11 +2570,15 @@ def ambilight_worker(config):
                                            EDGE_WIDTH, EDGE_OFFSET, frame_capture, led_idx, brightness)
 
                 if multi_device_mode:
+                    multi_brightness = FULLSCREEN_MAX_BRIGHTNESS if is_full else 255
                     for multi_device in active_multi_devices:
                         if IDLE_MODE and not is_full:
-                            multi_data = solid_frame(r, g, b, sum(multi_device["leds"].values()))
+                            multi_data = solid_frame(r, g, b, expected_stream_led_count(multi_device))
                         else:
-                            multi_data = build_device_frame(multi_device, EDGE_WIDTH, EDGE_OFFSET, frame_capture)
+                            multi_data = build_device_frame(multi_device, EDGE_WIDTH, EDGE_OFFSET,
+                                                            frame_capture, brightness=multi_brightness)
+                        if not multi_data:
+                            continue
                         sock.sendto(multi_data, (multi_device["ip"], multi_device["port"]))
                         packets_sent += 1
                 else:
@@ -2290,7 +2637,7 @@ def main():
     monitor_catalog.refresh(get_available_monitors)
     
     print("\n" + "="*60)
-    print("  AMBILIGHT PC v1.6.4.2 - Windows")
+    print("  AMBILIGHT PC v1.7.0 - Windows")
     print("="*60)
     
     # Konfigürasyonu yükle

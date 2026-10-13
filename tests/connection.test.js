@@ -44,9 +44,9 @@ test('FPS and legacy connection strings never substitute for evidence', () => {
 });
 
 test('a late manual test cannot change the current target or main indicator', async () => {
-    const html = fs.readFileSync(path.join(__dirname, '../web_ui/index.html'), 'utf8');
-    const start = html.indexOf('        async function testWemosConnection()');
-    const end = html.indexOf('        // --- Actions ---', start);
+    const html = fs.readFileSync(path.join(__dirname, '../web_ui/app.js'), 'utf8');
+    const start = html.indexOf('async function testWemosConnection()');
+    const end = html.indexOf('// --- Actions ---', start);
     const nodes = new Map();
     let resolve, refreshes = 0;
     const context = vm.createContext({
@@ -69,5 +69,5 @@ test('a late manual test cannot change the current target or main indicator', as
     resolve({ udp_ok: false, http_ok: true, applied: true });
     await current;
     assert.equal(refreshes, 1); // A fresh status fetch, never a direct indicator overwrite.
-    assert.equal(nodes.get('http-test-result').textContent, '✅ Başarılı');
+    assert.equal(nodes.get('http-test-result').textContent, 'Başarılı');
 });
