@@ -9,6 +9,7 @@ const fetchLogs = poller.add('logs', fetchLogsData, 2000);
 
 // Firmware sınırı: wemos_code.ino içindeki MAX_LED_COUNT ile aynı olmalı
 const MAX_LED_COUNT = 170;
+const UI_VERSION = '1.7.1';
 
 const STRIP_MODES = ['stream', 'off', 'solid', 'breathe', 'rainbow', 'chase', 'twinkle'];
 const STRIP_MODE_LABELS = {
@@ -81,6 +82,7 @@ function showPage(name) {
     document.getElementById('page-subtitle').textContent = PAGES[name][1];
     if (name === 'logs') fetchLogs();
     if (name === 'devices') fetchDevices();
+    if (name === 'wemos') loadWemosInfo();
 }
 
 document.querySelectorAll('.nav-item').forEach(item => item.addEventListener('click', () => showPage(item.dataset.page)));
@@ -319,8 +321,10 @@ function buildDeviceItem(device, { selectable }) {
     body.append(title, sub);
 
     const chip = document.createElement('span');
-    const [state, text] = validationChip(deviceValidations.get(device.id), device);
+    const validation = deviceValidations.get(device.id);
+    const [state, text] = validationChip(validation, device);
     setChip(chip, state, text);
+    if (validation && validation.message) chip.title = validation.message;
     if (!device.enabled && device.id !== LEGACY_ID) setChip(chip, 'neutral', 'Pasif');
     item.append(body, chip);
     if (selectable) item.addEventListener('click', () => setDeviceForm(device));
@@ -349,6 +353,7 @@ function renderDevices() {
         }
         deviceRecords.forEach(device => target.appendChild(buildDeviceItem(device, { selectable: target === container })));
     });
+    renderWemosTargets();
 }
 
 async function fetchDevices() {
@@ -393,10 +398,45 @@ function setDeviceForm(device = null) {
         : (device ? '' : 'Cihazı kaydettikten sonra "Wemos\'tan şeritleri al" ile şerit sayısı ve pinleri çekebilirsiniz.');
 
     editorStrips = (device?.strips || []).map(strip => ({ ...strip }));
-    const [state, text] = validationChip(deviceValidations.get(device?.id), device);
-    setChip(document.getElementById('device-validation'), device ? state : 'neutral', device ? text : 'Kaydedilmedi');
+    showEditorValidation(device);
     updateRoleFields();
     renderDevices();
+    setStripStatus('');
+    if (device && role === 'strips' && !editorStrips.length && !autoFetchedStrips.has(device.id)) {
+        autoFetchedStrips.add(device.id);
+        fetchStripsFromWemos(true);
+    }
+}
+
+const autoFetchedStrips = new Set();
+
+function setStripStatus(text, isError = false) {
+    const element = document.getElementById('strip-status');
+    if (!element) return;
+    element.textContent = text;
+    element.style.color = isError ? 'var(--bad)' : '';
+}
+
+function describeFirmware(validation) {
+    if (!validation) return '';
+    if (!validation.reachable) return 'Wemos\'a ulaşılamıyor; IP adresini ve cihazın açık olduğunu kontrol edin.';
+    if (!validation.segments_supported) return `Wemos firmware ${validation.firmware_version || 'eski'}: şerit modlarını desteklemiyor. 1.7.0 firmware yükleyin (Wemos sayfası, Firmware güncelleme).`;
+    return `Firmware ${validation.firmware_version}, şerit modları destekleniyor.`;
+}
+
+function showEditorValidation(device) {
+    const validation = device ? deviceValidations.get(device.id) : null;
+    const [state, text] = validationChip(validation, device);
+    const chip = document.getElementById('device-validation');
+    setChip(chip, device ? state : 'neutral', device ? text : 'Kaydedilmedi');
+    if (validation && validation.message) chip.title = validation.message;
+    const hint = document.getElementById('device-editor-hint');
+    if (validation && !validation.compatible) {
+        const detail = validation.reachable
+            ? `Doğrulama: ${validation.message}. Uygulamanın göndereceği LED sayısı Wemos'un beklediği sayıyla aynı olmalı.`
+            : `Doğrulama: ${validation.message}.`;
+        hint.textContent = hint.textContent ? `${hint.textContent} ${detail}` : detail;
+    }
 }
 
 function updateRoleFields() {
@@ -551,6 +591,7 @@ function scheduleStripApply() {
     clearTimeout(stripApplyTimer);
     if (!deviceFormValue('device-id')) return;
     stripApplyTimer = setTimeout(async () => {
+        setStripStatus('Wemos\'a gönderiliyor...');
         const saved = await saveDevice(true);
         if (saved) await applyDevice(true);
     }, 500);
@@ -592,7 +633,10 @@ async function saveDevice(silent = false) {
         if (!result.success) throw new Error(result.message || 'Cihaz kaydedilemedi');
         if (!silent) showToast(id ? 'Cihaz güncellendi' : 'Cihaz eklendi', 'success');
         await fetchDevices();
-        if (!silent) setDeviceForm(result.device);
+        if (!silent) {
+            setDeviceForm(result.device);
+            if (result.device.role === 'strips') await fetchStripsFromWemos(true);
+        }
         return true;
     } catch (error) {
         showToast(error.message || 'Cihaz kaydedilemedi', 'error');
@@ -608,26 +652,31 @@ async function applyDevice(silent = false) {
         if (!result.success) throw new Error(result.message || 'Wemos ile eşitlenemedi');
         if (result.validation) deviceValidations.set(id, result.validation);
         await fetchDevices();
+        const stamp = new Date().toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
         if (!silent) {
             setDeviceForm(result.device);
             showToast(result.pushed ? 'Ayarlar Wemos\'a gönderildi' : (result.message || 'Ayar gönderilemedi'), result.pushed ? 'success' : 'warning');
         } else {
-            const [state, text] = validationChip(result.validation, result.device);
-            setChip(document.getElementById('device-validation'), state, text);
+            showEditorValidation(result.device);
             if (!result.pushed) showToast(result.message || 'Ayar gönderilemedi', 'warning');
         }
+        setStripStatus(result.pushed
+            ? `${stamp} Ayarlar Wemos'a gönderildi. ${describeFirmware(result.validation)}`
+            : `${stamp} Gönderilemedi: ${result.message || ''} ${describeFirmware(result.validation)}`, !result.pushed);
         return true;
     } catch (error) {
+        setStripStatus(`Gönderilemedi: ${error.message}`, true);
         showToast(error.message || 'Wemos ile eşitlenemedi', 'error');
         return false;
     }
 }
 
-async function fetchStripsFromWemos() {
+async function fetchStripsFromWemos(silent = false) {
     const id = deviceFormValue('device-id');
     if (!id) return;
     const button = document.getElementById('fetch-strips-button');
     button.disabled = true;
+    setStripStatus('Wemos\'tan şerit bilgisi alınıyor...');
     try {
         const saved = await saveDevice(true);
         if (!saved) return;
@@ -635,11 +684,14 @@ async function fetchStripsFromWemos() {
         if (!result.success) throw new Error(result.message || 'Şeritler alınamadı');
         if (result.validation) deviceValidations.set(id, result.validation);
         await fetchDevices();
+        autoFetchedStrips.add(id);
         setDeviceForm(result.device);
         const count = (result.device.strips || []).length;
-        showToast(count ? `${count} şerit alındı` : 'Wemos etkin şerit bildirmedi', count ? 'success' : 'warning');
+        setStripStatus(`${count ? count + ' şerit alındı. ' : 'Wemos etkin şerit bildirmedi. '}${describeFirmware(result.validation)}`, !count || !(result.validation && result.validation.segments_supported));
+        if (!silent) showToast(count ? `${count} şerit alındı` : 'Wemos etkin şerit bildirmedi', count ? 'success' : 'warning');
     } catch (error) {
-        showToast(error.message || 'Şeritler alınamadı', 'error');
+        setStripStatus(`Şeritler alınamadı: ${error.message}`, true);
+        if (!silent) showToast(error.message || 'Şeritler alınamadı', 'error');
     } finally {
         button.disabled = !deviceFormValue('device-id');
     }
@@ -692,10 +744,7 @@ async function validateDevices(silent = false) {
         deviceValidations = new Map((result.devices || []).map(device => [device.id, device]));
         renderDevices();
         const selected = deviceRecords.find(device => device.id === deviceFormValue('device-id'));
-        if (selected) {
-            const [state, text] = validationChip(deviceValidations.get(selected.id), selected);
-            setChip(document.getElementById('device-validation'), state, text);
-        }
+        if (selected) setDeviceForm(selected);
         if (silent) return;
         const problems = (result.devices || []).filter(device => !device.compatible);
         if (!problems.length) showToast('Tüm cihazlar doğrulandı', 'success');
@@ -754,9 +803,98 @@ async function deleteSelectedDevice() {
     }
 }
 
-// --- Durum ---
+// --- Wemos sayfası: hedef cihaz ---
+let mainTarget = { ip: '', port: 7777 };
 let connectionTarget = '';
 let connectionTestRequest = 0;
+
+function wemosTargets() {
+    const list = [{ id: 'main', name: 'Ana Wemos', ip: mainTarget.ip, port: mainTarget.port }];
+    deviceRecords.forEach(device => {
+        if (device.id === LEGACY_ID) return;
+        list.push({ id: device.id, name: device.name, ip: device.ip, port: device.port });
+    });
+    return list;
+}
+
+function selectedWemosTarget() {
+    const select = document.getElementById('wemos-target');
+    const chosen = select ? select.value : 'main';
+    return wemosTargets().find(target => target.id === chosen) || wemosTargets()[0];
+}
+
+function renderWemosTargets() {
+    const select = document.getElementById('wemos-target');
+    if (!select) return;
+    const previous = select.value || 'main';
+    const targets = wemosTargets();
+    select.replaceChildren(...targets.map(target => {
+        const option = document.createElement('option');
+        option.value = target.id;
+        option.textContent = target.ip ? `${target.name} (${target.ip})` : `${target.name} (IP yok)`;
+        return option;
+    }));
+    select.value = targets.some(target => target.id === previous) ? previous : 'main';
+    renderWemosTargetDetails();
+}
+
+function renderWemosTargetDetails() {
+    const target = selectedWemosTarget();
+    els.wemosIp.textContent = target.ip || '-';
+    els.wemosPort.textContent = target.port || '-';
+    const label = document.getElementById('wemos-action-target');
+    if (label) label.textContent = target.name;
+}
+
+document.getElementById('wemos-target').addEventListener('change', () => {
+    connectionTestRequest++;
+    document.getElementById('connection-test-details').classList.remove('show');
+    renderWemosTargetDetails();
+    loadWemosInfo();
+});
+
+async function loadWemosInfo() {
+    const container = document.getElementById('wemos-info');
+    const target = selectedWemosTarget();
+    if (!container) return;
+    if (!target.ip) { container.textContent = 'Bu cihazın IP adresi yok.'; return; }
+    container.textContent = 'Bilgi alınıyor...';
+    try {
+        const result = await api.getWemosStatus({ ip: target.ip });
+        if (!result.success) throw new Error(result.message || 'Durum alınamadı');
+        const st = result.status;
+        container.replaceChildren();
+        const rows = [
+            ['Firmware', st.firmware_version || 'bilinmiyor'],
+            ['Mod', st.mode === 'hotspot' ? 'Hotspot (kurulum)' : 'Wi-Fi'],
+            ['Sinyal', st.rssi ? `${st.rssi} dBm` : '-'],
+            ['Çalışma süresi', st.uptime_seconds !== undefined ? `${Math.floor(st.uptime_seconds / 60)} dk` : '-'],
+            ['Toplam LED', st.led_count ?? '-'],
+            ['Akış LED', st.stream_led_count ?? (st.segments_supported ? '-' : 'firmware 1.7.0 gerekli')],
+            ['Uyku modu', st.sleep_mode ? 'Açık' : 'Kapalı'],
+            ['Son reset', st.reset_reason || '-'],
+        ];
+        rows.forEach(([label, value]) => {
+            const row = document.createElement('div');
+            row.className = 'kv';
+            const k = document.createElement('span'); k.className = 'kv-label'; k.textContent = label;
+            const v = document.createElement('span'); v.className = 'kv-value'; v.textContent = String(value);
+            row.append(k, v);
+            container.appendChild(row);
+        });
+        (st.strips || []).filter(strip => strip.enabled).forEach(strip => {
+            const row = document.createElement('div');
+            row.className = 'kv';
+            const k = document.createElement('span'); k.className = 'kv-label'; k.textContent = `Şerit ${strip.index}`;
+            const v = document.createElement('span'); v.className = 'kv-value';
+            v.textContent = `${strip.led_pin} · ${strip.led_count} LED${strip.mode ? ' · ' + (STRIP_MODE_LABELS[strip.mode] || strip.mode) : ''}`;
+            row.append(k, v);
+            container.appendChild(row);
+        });
+    } catch (error) {
+        container.textContent = `Bilgi alınamadı: ${error.message}`;
+    }
+}
 
 async function fetchStatusData() {
     try {
@@ -793,8 +931,10 @@ function updateUI(status) {
         document.getElementById('connection-test-details').classList.remove('show');
     }
 
-    els.wemosIp.textContent = status.wemos_ip || '-';
-    els.wemosPort.textContent = status.wemos_port || '-';
+    if (mainTarget.ip !== (status.wemos_ip || '') || mainTarget.port !== (status.wemos_port || 7777)) {
+        mainTarget = { ip: status.wemos_ip || '', port: status.wemos_port || 7777 };
+        renderWemosTargets();
+    }
     els.localIp.textContent = status.local_ip || '-';
     document.getElementById('ov-wemos-ip').textContent = status.wemos_ip ? `${status.wemos_ip}:${status.wemos_port || 7777}` : 'IP bekleniyor';
 
@@ -859,6 +999,27 @@ function updateUI(status) {
         if (display) display.textContent = status.fps;
     }
 
+    const backendVersion = document.getElementById('backend-version');
+    if (backendVersion) backendVersion.textContent = status.backend_version ? `${status.backend_version} (port ${status.backend_port || '?'})` : 'eski sürüm (sürüm bildirmiyor)';
+    const warning = document.getElementById('version-warning');
+    if (warning) {
+        const unreachable = status.connectivity && status.connectivity.state === 'backend_unavailable';
+        let text = '';
+        if (unreachable) {
+            const exit = status.backend_exit;
+            text = exit === null || exit === undefined
+                ? `Arka plan hizmetine (port ${status.backend_port || '?'}) ulaşılamıyor. Başlatılıyorsa birkaç saniye bekleyin.`
+                : `Arka plan hizmeti kapandı (çıkış kodu ${exit}). Son çıktı:`;
+            if (Array.isArray(status.backend_output) && status.backend_output.length && exit !== null && exit !== undefined) {
+                text += '\n' + status.backend_output.join('\n');
+            }
+        } else if (status.backend_version !== UI_VERSION) {
+            text = `Arka plan hizmeti ${status.backend_version || 'sürüm bildirmeyen eski bir sürüm'}, arayüz ${UI_VERSION}. Büyük olasılıkla tepside kurulu eski LuxEdge çalışıyor; onu kapatın ya da lush_backend.exe dosyasını yeniden derleyin.`;
+        }
+        warning.classList.toggle('hidden', !text);
+        warning.textContent = text;
+    }
+
     if (status.multi_device_enabled !== undefined && status.multi_device_enabled !== multiDeviceEnabled) {
         multiDeviceEnabled = Boolean(status.multi_device_enabled);
         renderDevices();
@@ -883,7 +1044,8 @@ async function testWemosConnection() {
     msgEl.textContent = 'Test ediliyor...';
 
     try {
-        const result = await api.testWemosConnection();
+        const target = typeof selectedWemosTarget === 'function' ? selectedWemosTarget() : undefined;
+        const result = await api.testWemosConnection(target && target.id !== 'main' ? { ip: target.ip, port: target.port } : undefined);
         if (request !== connectionTestRequest) return;
         const udpOk = result.udp_ok;
         const httpOk = result.http_ok;
@@ -940,7 +1102,7 @@ async function saveConfig(silent = false) {
             idle_brightness: (els.idleBrightness && parseInt(els.idleBrightness.value)) || 50,
             fullscreen_max_brightness: (els.fullscreenMaxBrightness && parseInt(els.fullscreenMaxBrightness.value)) || 255,
             fps: (els.targetFps && parseInt(els.targetFps.value)) || 60,
-            wemos_port: parseInt(els.wemosPort?.textContent) || 7777,
+            wemos_port: mainTarget.port || 7777,
             led_monitor_index: parseInt(els.ledMonitorIndex?.value) || 1,
         };
 
@@ -969,25 +1131,37 @@ async function restartApp() {
     await api.restartApp();
 }
 
+function actionTarget() {
+    const target = selectedWemosTarget();
+    if (!target.ip) { showToast(`${target.name} için IP adresi yok`, 'error'); return null; }
+    return target;
+}
+
 async function restartWemos() {
-    showToast('Wemos yeniden başlatılıyor', 'info');
-    const result = await api.restartWemos();
+    const target = actionTarget();
+    if (!target) return;
+    showToast(`${target.name} yeniden başlatılıyor`, 'info');
+    const result = await api.restartWemos({ ip: target.ip });
     if (result && !result.success) showToast(result.message || 'Wemos yeniden başlatılamadı', 'error');
 }
 
 async function toggleSleep() {
-    const result = await api.toggleSleep();
-    if (result && result.success) showToast(result.message, 'success');
+    const target = actionTarget();
+    if (!target) return;
+    const result = await api.toggleSleep({ ip: target.ip });
+    if (result && result.success) showToast(`${target.name}: ${result.message}`, 'success');
     else showToast((result && result.message) || 'Uyku modu değiştirilemedi', 'error');
 }
 
 async function resetWemosWifi() {
+    const target = actionTarget();
+    if (!target) return;
     const ok = await confirmDialog('Wi-Fi ve LED ayarlarını sıfırla',
-        'Wemos tüm ayarlarını silip hotspot moduna dönecek. Kurulumu yeniden yapmanız gerekir.',
+        `${target.name} (${target.ip}) tüm ayarlarını silip hotspot moduna dönecek. Kurulumu yeniden yapmanız gerekir.`,
         { confirmLabel: 'Sıfırla', danger: true });
     if (!ok) return;
     try {
-        const result = await api.resetWemosWifi();
+        const result = await api.resetWemosWifi({ ip: target.ip });
         showToast(result.message, result.success ? 'success' : 'error');
     } catch (e) { showToast('Hata oluştu', 'error'); }
 }
@@ -1036,8 +1210,8 @@ async function uploadFirmware() {
     statusText.textContent = 'Firmware dosyası okunuyor';
 
     try {
-        const wemosIp = document.getElementById('wemos-ip').textContent;
-        if (!wemosIp || wemosIp === '-') throw new Error('Wemos IP adresi bulunamadı');
+        const wemosIp = selectedWemosTarget().ip;
+        if (!wemosIp) throw new Error('Seçilen cihazın IP adresi yok');
 
         const formData = new FormData();
         formData.append('firmware', file);

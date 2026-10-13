@@ -31,10 +31,11 @@ contextBridge.exposeInMainWorld('luxedge', {
     restartApp: () => ipcRenderer.invoke('restart-app'),
 
     // Wemos Kontrol
-    restartWemos: () => ipcRenderer.invoke('wemos-restart'),
-    toggleSleep: () => ipcRenderer.invoke('wemos-sleep'),
-    resetWemosWifi: () => ipcRenderer.invoke('wemos-reset-wifi'),
-    testWemosConnection: () => ipcRenderer.invoke('test-wemos-connection'),
+    restartWemos: (target) => ipcRenderer.invoke('wemos-restart', target),
+    toggleSleep: (target) => ipcRenderer.invoke('wemos-sleep', target),
+    resetWemosWifi: (target) => ipcRenderer.invoke('wemos-reset-wifi', target),
+    testWemosConnection: (target) => ipcRenderer.invoke('test-wemos-connection', target),
+    getWemosStatus: (target) => ipcRenderer.invoke('get-wemos-status', target),
 
     // Otomatik Başlatma
     getAutoStart: () => ipcRenderer.invoke('get-autostart'),

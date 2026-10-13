@@ -58,7 +58,7 @@
                 </button>
             </nav>
             <div class="sidebar-footer">
-                <div class="sidebar-version" id="app-version">Sürüm 1.7.0</div>
+                <div class="sidebar-version" id="app-version">Sürüm 1.7.1</div>
             </div>
         </aside>
 
@@ -73,6 +73,7 @@
                     <span id="status-text">Bağlanıyor</span>
                 </div>
             </header>
+            <div id="version-warning" class="banner hidden"></div>
 
             <!-- GENEL BAKIŞ -->
             <section class="page active" data-page="overview">
@@ -288,6 +289,7 @@
                             </div>
                             <p class="hint">LED sayısı ve pin Wemos'un hotspot kurulumunda belirlenir; burada her şeride ayrı mod, renk ve animasyon atanır. "Ekran akışı" modu seçilen monitör kenarını yansıtır, diğer modlar bilgisayar kapalıyken de cihaz üzerinde çalışır.</p>
                             <div id="strip-list" class="strip-list"></div>
+                            <p class="hint" id="strip-status"></p>
                         </div>
 
                         <div class="actions">
@@ -303,13 +305,20 @@
 
             <!-- WEMOS -->
             <section class="page" data-page="wemos">
+                <div class="toolbar">
+                    <label for="wemos-target" class="label-text" style="margin:0">Hedef cihaz</label>
+                    <select id="wemos-target" class="input" style="max-width:320px">
+                        <option value="main">Ana Wemos</option>
+                    </select>
+                    <span class="muted" id="wemos-target-hint">Bu sayfadaki tüm işlemler seçilen cihaza uygulanır.</span>
+                </div>
                 <div class="grid-2">
                     <div class="stack">
                         <div class="card">
                             <div class="card-head">
                                 <h2>Bağlantı</h2>
                                 <div class="row">
-                                    <button class="btn btn-ghost btn-sm" onclick="forceScan()" title="Ağdaki Ana Wemos'u arar ve IP'sini kaydeder">Tara</button>
+                                    <button class="btn btn-ghost btn-sm" onclick="forceScan()" title="Ağdaki Wemos'u arar ve Ana Wemos IP'si olarak kaydeder">Ana Wemos'u tara</button>
                                     <button class="btn btn-primary btn-sm" onclick="testWemosConnection()" title="UDP PING/PONG ve HTTP /status ile ayrı ayrı test eder">Test et</button>
                                 </div>
                             </div>
@@ -324,8 +333,16 @@
                         </div>
 
                         <div class="card">
-                            <div class="card-head"><h2>Elle IP</h2></div>
-                            <p class="hint">Otomatik tarama cihazı bulamazsa IP adresini buraya yazın. Yazmayı bıraktıktan kısa süre sonra kaydedilir.</p>
+                            <div class="card-head">
+                                <h2>Cihaz bilgisi</h2>
+                                <button class="btn btn-ghost btn-sm" onclick="loadWemosInfo()">Yenile</button>
+                            </div>
+                            <div id="wemos-info" class="list-empty">Bilgi alınmadı.</div>
+                        </div>
+
+                        <div class="card">
+                            <div class="card-head"><h2>Ana Wemos IP'sini elle gir</h2></div>
+                            <p class="hint">Otomatik tarama Ana Wemos'u bulamazsa IP adresini buraya yazın. Yazmayı bıraktıktan kısa süre sonra kaydedilir. Ek cihazların IP'si Cihazlar sayfasından düzenlenir.</p>
                             <div class="row">
                                 <input type="text" id="manual-ip-input" class="input" placeholder="192.168.1.50">
                                 <button class="btn btn-primary" onclick="saveManualIp()">Kaydet</button>
@@ -335,11 +352,11 @@
 
                     <div class="stack">
                         <div class="card">
-                            <div class="card-head"><h2>Cihaz işlemleri</h2></div>
+                            <div class="card-head"><h2>Cihaz işlemleri</h2><span class="muted" id="wemos-action-target">Ana Wemos</span></div>
                             <div class="action-list">
                                 <button class="action" onclick="restartWemos()">
                                     <span class="action-title">Yeniden başlat</span>
-                                    <span class="action-desc">Donma veya bağlantı sorununda Wemos'u uzaktan resetler.</span>
+                                    <span class="action-desc">Donma veya bağlantı sorununda seçilen Wemos'u uzaktan resetler.</span>
                                 </button>
                                 <button class="action" onclick="toggleSleep()">
                                     <span class="action-title">Uyku modu</span>
@@ -347,14 +364,14 @@
                                 </button>
                                 <button class="action danger" onclick="resetWemosWifi()">
                                     <span class="action-title">Wi-Fi ve LED ayarlarını sıfırla</span>
-                                    <span class="action-desc">Cihaz hotspot moduna döner; kurulum yeniden yapılır.</span>
+                                    <span class="action-desc">Seçilen cihaz hotspot moduna döner; kurulum yeniden yapılır.</span>
                                 </button>
                             </div>
                         </div>
 
                         <div class="card">
                             <div class="card-head"><h2>Firmware güncelleme</h2></div>
-                            <p class="hint">Derlenmiş .bin dosyasını Wi-Fi üzerinden yükler. Yükleme sırasında LED'ler mor yanar, cihazın gücünü kesmeyin.</p>
+                            <p class="hint">Derlenmiş .bin dosyasını Wi-Fi üzerinden seçilen cihaza yükler. Yükleme sırasında LED'ler mor yanar, cihazın gücünü kesmeyin.</p>
                             <div class="row">
                                 <input type="file" id="firmware-file" accept=".bin" class="input file">
                                 <button class="btn btn-primary" onclick="uploadFirmware()" id="btn-upload-firmware">Yükle</button>
@@ -398,7 +415,8 @@
                     </div>
                     <div class="card">
                         <div class="card-head"><h2>Uygulama</h2></div>
-                        <div class="kv"><span class="kv-label">Sürüm</span><span class="kv-value">1.7.0</span></div>
+                        <div class="kv"><span class="kv-label">Arayüz sürümü</span><span class="kv-value">1.7.1</span></div>
+                        <div class="kv"><span class="kv-label">Arka plan hizmeti</span><span class="kv-value" id="backend-version">-</span></div>
                         <div class="kv"><span class="kv-label">Ayar dosyası</span><span class="kv-value">%APPDATA%\LuxEdge\ambilight_config.json</span></div>
                         <div class="kv"><span class="kv-label">Günlük dosyası</span><span class="kv-value">%APPDATA%\LuxEdge\luxedge.log</span></div>
                         <div class="actions">

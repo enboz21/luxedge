@@ -18,7 +18,10 @@ from monitor_catalog import MonitorCatalog
 from connectivity import Connectivity, legacy_connection
 
 monitor_catalog = MonitorCatalog()
+APP_VERSION = "1.7.1"
 BACKEND_PORT = int(os.environ.get('LUXEDGE_BACKEND_PORT', '8888'))
+# Electron portu kendisi seçip ortam değişkeniyle verir; o zaman başka porta kaymak yasak.
+BACKEND_PORT_STRICT = 'LUXEDGE_BACKEND_PORT' in os.environ
 
 # Windows konsolunda emoji/Unicode desteği için encoding'i UTF-8'e ayarla.
 # PyInstaller --noconsole çalıştırmalarında stdout/stderr None olabilir.
@@ -1518,8 +1521,10 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
                 self.serve_scan()
             elif self.path == '/api/logs':
                 self.serve_logs()
-            elif self.path == '/api/test-wemos-connection':
+            elif self.path.startswith('/api/test-wemos-connection'):
                 self.handle_test_wemos_connection()
+            elif self.path.startswith('/api/wemos/status'):
+                self.handle_wemos_status()
             else:
                 self.send_error(404)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
@@ -1582,6 +1587,33 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
             raise ValueError("JSON gövdesi gerekli")
         return json.loads(self.rfile.read(content_length).decode('utf-8'))
 
+    def _query_param(self, name):
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(getattr(self, 'path', '') or '').query)
+        values = query.get(name)
+        return values[0].strip() if values else ""
+
+    def _target_wemos_ip(self, payload=None):
+        """İstek bir cihaz IP'si belirtiyorsa onu, yoksa Ana Wemos'u hedefle."""
+        ip = ""
+        if isinstance(payload, dict):
+            ip = str(payload.get("ip", "") or "").strip()
+        if not ip:
+            ip = self._query_param("ip")
+        if ip:
+            try:
+                if ipaddress.ip_address(ip).version != 4:
+                    raise ValueError
+            except ValueError:
+                raise ValueError("Geçerli bir IPv4 adresi girin")
+            return ip
+        return get_status().get('wemos_ip') or ""
+
+    def _read_optional_json_body(self):
+        try:
+            return self._read_json_body()
+        except ValueError:
+            return {}
+
     def _device_id_from_path(self):
         path = urllib.parse.urlparse(self.path).path
         prefix = "/api/devices/"
@@ -1626,6 +1658,9 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
         # Monitör listesini ve seçili monitörü ekle
         status.update(monitor_catalog.snapshot())
         status.setdefault('led_monitor_index', 1)
+        status['backend_version'] = APP_VERSION
+        status['backend_port'] = BACKEND_PORT
+        status['backend_pid'] = os.getpid()
 
         # Uptime hesapla
         if status['uptime_start'] > 0:
@@ -1807,14 +1842,36 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
 
         self._safe_send_json(result)
 
+    def handle_wemos_status(self):
+        """Seçilen Wemos'un firmware /status çıktısını döndür (tanılama)."""
+        try:
+            ip = self._target_wemos_ip()
+            if not ip:
+                raise ValueError("Wemos IP adresi ayarlanmamış")
+            status = get_wemos_status(ip, timeout=3)
+            if status is None:
+                result = {"success": False, "ip": ip, "message": "Wemos /status erişilemiyor"}
+            else:
+                result = {"success": True, "ip": ip, "status": status}
+        except Exception as e:
+            result = {"success": False, "message": str(e)}
+        self._safe_send_json(result)
+
     def handle_test_wemos_connection(self):
         """Wemos bağlantı durumunu test eder (UDP + HTTP)"""
         try:
             status = get_status()
             wemos_ip = status.get('wemos_ip')
             wemos_port = status.get('wemos_port', 7777)
+            requested_ip = self._query_param("ip")
 
-            if not wemos_ip:
+            if requested_ip and requested_ip != wemos_ip:
+                # Ek cihaz: ana bağlantı izleyicisine dokunmadan doğrudan test et.
+                requested_port = int(self._query_param("port") or 7777)
+                udp_ok, http_ok, message = test_wemos_connection(requested_ip, requested_port)
+                result = {"success": udp_ok or http_ok, "message": message, "udp_ok": udp_ok,
+                          "http_ok": http_ok, "applied": None, "ip": requested_ip, "port": requested_port}
+            elif not wemos_ip:
                 result = {"success": False, "message": "Wemos IP adresi ayarlanmamış", "udp_ok": False, "http_ok": False}
             else:
                 token = connectivity.begin(wemos_ip, wemos_port)
@@ -1845,9 +1902,9 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
         threading.Timer(1.0, restart_app).start()
 
     def handle_wemos_restart(self):
-        """Wemos'u yeniden başlat"""
+        """Wemos'u yeniden başlat (gövdede ip verilirse o cihaz)"""
         try:
-            wemos_ip = get_status().get('wemos_ip')
+            wemos_ip = self._target_wemos_ip(self._read_optional_json_body())
             url = f"http://{wemos_ip}/restart"
             urllib.request.urlopen(url, timeout=2)
             result = {"success": True, "message": "Wemos yeniden başlatılıyor..."}
@@ -1857,9 +1914,9 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
         self._safe_send_json(result)
 
     def handle_wemos_sleep(self):
-        """Wemos uyku modunu değiştir"""
+        """Wemos uyku modunu değiştir (gövdede ip verilirse o cihaz)"""
         try:
-            wemos_ip = get_status().get('wemos_ip')
+            wemos_ip = self._target_wemos_ip(self._read_optional_json_body())
             url = f"http://{wemos_ip}/toggle_sleep"
             with urllib.request.urlopen(url, timeout=2) as response:
                 resp_text = response.read().decode('utf-8').strip().upper()
@@ -1871,9 +1928,9 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
         self._safe_send_json(result)
 
     def handle_wemos_reset_wifi(self):
-        """Wemos Wi-Fi ayarlarını sıfırla"""
+        """Wemos Wi-Fi ayarlarını sıfırla (gövdede ip verilirse o cihaz)"""
         try:
-            wemos_ip = get_status().get('wemos_ip')
+            wemos_ip = self._target_wemos_ip(self._read_optional_json_body())
             url = f"http://{wemos_ip}/reset_wifi"
             urllib.request.urlopen(url, timeout=2)
             result = {"success": True, "message": "Wemos sıfırlanıyor, hotspot moduna dönülecek..."}
@@ -1949,6 +2006,10 @@ def start_web_server(port=8888):
         print(f"[WEB UI] http://localhost:{port} adresinde çalışıyor")
         return server
     except OSError as e:
+        if BACKEND_PORT_STRICT:
+            log.error(f"[WEB UI] Port {port} kullanımda; Electron'un verdiği port dışına çıkılmaz. "
+                      f"Başka bir LuxEdge (tepsi) çalışıyor olabilir: {e}")
+            return None
         if "10048" in str(e) or "Address already in use" in str(e):
             # Port kullanılıyorsa alternatif port dene
             alt_port = port + 1
@@ -2637,7 +2698,7 @@ def main():
     monitor_catalog.refresh(get_available_monitors)
     
     print("\n" + "="*60)
-    print("  AMBILIGHT PC v1.7.0 - Windows")
+    print(f"  AMBILIGHT PC v{APP_VERSION} - Windows (port {BACKEND_PORT})")
     print("="*60)
     
     # Konfigürasyonu yükle

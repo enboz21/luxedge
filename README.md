@@ -4,7 +4,7 @@
     <strong>Monitör arkası LED aydınlatmasını otomatik olarak yöneten, Electron + Python tabanlı masaüstü uygulaması</strong>
   </p>
   <p align="center">
-    <img src="https://img.shields.io/badge/version-1.7.0-blue?style=flat-square" alt="Version">
+    <img src="https://img.shields.io/badge/version-1.7.1-blue?style=flat-square" alt="Version">
     <img src="https://img.shields.io/badge/platform-Windows-0078D6?style=flat-square&logo=windows&logoColor=white" alt="Platform">
     <img src="https://img.shields.io/badge/license-CC%20BY--NC%204.0-green?style=flat-square" alt="License">
     <img src="https://img.shields.io/badge/hardware-ESP8266%20(Wemos)-red?style=flat-square" alt="Hardware">
@@ -118,7 +118,7 @@ Linux desteği, derleme betiği ve paket hedefleri kaldırılmıştır. Mevcut h
 
 ## 🚀 Kurulum
 
-Hazır paket için `LuxEdge Setup 1.7.0.exe` dosyasını kullanın. Aşağıdaki adımlar geliştiriciler içindir.
+Hazır paket için `LuxEdge Setup 1.7.1.exe` dosyasını kullanın. Aşağıdaki adımlar geliştiriciler içindir.
 
 ### 1. Projeyi İndirin
 ```powershell
@@ -175,7 +175,7 @@ Electron için `node_modules/electron/dist` kullanılır; derleme önbellekleri 
 altında tutulur. Gerekli NSIS araçları önbellekte yoksa ilk derlemede indirilir.
 Paketlenen backend'in SHA256 özeti kaynak binary ile karşılaştırılır.
 
-Çıktı: **`dist/LuxEdge Setup 1.7.0.exe`**. Bu işlem kurulum veya canlı uygulama testi yapmaz.
+Çıktı: **`dist/LuxEdge Setup 1.7.1.exe`**. Bu işlem kurulum veya canlı uygulama testi yapmaz.
 `npm run dist` yalnız Electron paketini üretir; Python kaynakları değiştiğinde güncel
 backend'in pakete girmesi için yukarıdaki tam derleme betiğini kullanın.
 
@@ -310,9 +310,11 @@ luxedge/
 | `/api/devices/mode` | POST | Çoklu cihaz modunu değiştirir |
 | `/api/devices/scan` | GET | Ağdaki Wemos cihazlarını arar |
 | `/api/devices/validation` | GET | Cihazların firmware LED toplamlarını doğrular |
-| `/api/wemos/restart` | POST | Wemos'u yeniden başlatır |
-| `/api/wemos/sleep` | POST | Wemos uyku modunu değiştirir |
-| `/api/wemos/reset_wifi` | POST | Wemos Wi-Fi ayarlarını sıfırlar |
+| `/api/wemos/status?ip=` | GET | Seçilen Wemos'un firmware `/status` çıktısı (ip verilmezse Ana Wemos) |
+| `/api/wemos/restart` | POST | Wemos'u yeniden başlatır; gövdede `{"ip": ...}` ile ek cihaz hedeflenir |
+| `/api/wemos/sleep` | POST | Wemos uyku modunu değiştirir; gövdede `ip` isteğe bağlı |
+| `/api/wemos/reset_wifi` | POST | Wemos Wi-Fi ayarlarını sıfırlar; gövdede `ip` isteğe bağlı |
+| `/api/test-wemos-connection?ip=&port=` | GET | Bağlantı testi; `ip` Ana Wemos dışındaysa ana izleyiciye dokunmadan test eder |
 
 ---
 
@@ -328,16 +330,21 @@ luxedge/
 
 ## 📝 Sürüm Geçmişi
 
-### v1.7.0 (Güncel)
+### v1.7.1 (Güncel)
+- 🛠️ **Wemos sayfasında cihaz seçimi:** Yeniden başlatma, uyku, Wi-Fi sıfırlama, bağlantı testi ve OTA yüklemesi seçilen cihaza gider; cihaz bilgisi kartı firmware sürümü, sinyal ve şeritleri gösterir.
+- 🔌 **Port ve sürüm güvenliği:** Electron boş portu seçip backend'e verir; backend komşu porta kaymaz. `/api/status` içindeki `backend_version` arayüzle uyuşmazsa ya da backend başlamazsa panelde uyarı ve son çıktı satırları gösterilir.
+- 🎛️ **Şerit akışı:** Şerit bazlı cihaz kaydedilince şeritler Wemos'tan otomatik çekilir; gönderim sonucu ve firmware desteği şeritlerin altında yazar. Doğrulama mesajı LED sayılarıyla cihaz düzenleyicide görünür.
+- Firmware sürümü 1.7.0 olarak kalır. Testler: 59 Python + 24 JavaScript.
+
+### v1.7.0
 - 🧩 **Şerit bazlı Wemos görevleri:** Her fiziksel şerit ayrı mod alır (ekran akışı, kapalı, sabit renk, nefes alma, gökkuşağı, kovalama, parıltı). Yerel modlar firmware üzerinde çalışır, EEPROM'da saklanır ve PC kapalıyken de sürer.
 - 📡 **Firmware 1.7.0:** `/segments` uçları, `/status` içinde şerit modları ve `stream_led_count`; UDP akışı yalnız akış modundaki şeritlere dağıtılır, bekleme halkası ve veri kesilme kurtarması yalnız akış şeritleri için çalışır.
 - 🧠 **Cihaz modeli:** `role: ambilight | strips`, şerit kayıtları, `POST /api/devices/{id}/sync` ile Wemos'tan şerit sayısı/pin alma ve ayar gönderme; Ana Wemos kaydı tekli ayarlardan otomatik tazelenir; worker doğrulaması önbelleklenerek kare döngüsündeki HTTP beklemeleri kaldırıldı.
 - 🎛️ **Yeni arayüz:** Sayfalı düzen (Genel Bakış, Ambilight, Cihazlar, Wemos, Günlük, Sistem), sade koyu tema, şerit düzenleyici, uygulama içi onay pencereleri; emoji kullanımı kaldırıldı.
-- 🧪 Testler: 55 Python + 23 JavaScript.
 
 ### Önceki Windows optimizasyonu (8 Ekim 2026)
 
-Bu optimizasyon 1.6.4.2 sürümüyle yayımlanmıştı; güncel sürüm 1.7.0'dır. Wemos firmware
+Bu optimizasyon 1.6.4.2 sürümüyle yayımlanmıştı; güncel sürüm 1.7.1'dir. Wemos firmware
 sürümü uygulama sürümünden bağımsızdır.
 
 - **Monitör listesi:** Açılışta yükleme, elle Güncelle düğmesi ve durum sorgularında önbellek kullanımı.
@@ -462,7 +469,7 @@ Kaynak kurulum adımlarından sonra:
 node --test tests/electron.test.js tests/monitors.test.js
 ```
 
-13 Ekim 2026 doğrulamasında **55 Python + 23 JavaScript testi (78 toplam)** geçti
+13 Ekim 2026 doğrulamasında **59 Python + 24 JavaScript testi (82 toplam)** geçti
 (`tests/test_strip_devices.py` şerit doğrulama, kare üretimi ve eşitleme uçlarını kapsar).
 Testler yapay ekran görüntüleri, taklit ağ/süreç nesneleri ve geçici ayarlar kullanır;
 gerçek Wemos'a bağlanmaz, ekran yakalamaz veya kurulum çalıştırmaz.

@@ -6,15 +6,43 @@
 const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage } = require('electron');
 const { spawn } = require('child_process');
 const http = require('http');
+const net = require('net');
 const path = require('path');
 const fs = require('fs');
 
 let mainWindow;
 let pythonProcess;
+// Backend başlatılamazsa son çıktı satırları ve çıkış kodu arayüzde gösterilir.
+const backendOutput = [];
+let backendExit = null;
+function rememberBackendOutput(text) {
+    for (const line of text.split(/\r?\n/)) {
+        if (!line.trim()) continue;
+        backendOutput.push(line.trim());
+        if (backendOutput.length > 40) backendOutput.shift();
+    }
+}
 let tray = null;
 let shutdownPromise = null;
 const ownsInstance = app.requestSingleInstanceLock();
-const PYTHON_PORT = Number(process.env.LUXEDGE_BACKEND_PORT || 8888);
+let PYTHON_PORT = Number(process.env.LUXEDGE_BACKEND_PORT || 8888);
+const PORT_PINNED = Boolean(process.env.LUXEDGE_BACKEND_PORT);
+const APP_VERSION = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).luxedgeVersion;
+
+// Kurulu (tepsi) LuxEdge 8888'i tutuyorsa yeni backend başka porta kaymasın diye
+// portu Electron seçer ve backend'e ortam değişkeniyle verir.
+function findFreePort(start, attempts = 20) {
+    return new Promise(resolve => {
+        const tryPort = port => {
+            if (port >= start + attempts) { resolve(start); return; }
+            const probe = net.createServer();
+            probe.unref();
+            probe.once('error', () => tryPort(port + 1));
+            probe.listen({ port, host: '127.0.0.1' }, () => probe.close(() => resolve(port)));
+        };
+        tryPort(start);
+    });
+}
 const START_IN_TRAY = '--start-in-tray';
 let showOnReady = !(process.argv || []).includes(START_IN_TRAY);
 
@@ -149,28 +177,35 @@ function startPython() {
 
         pythonProcess = spawn(executable, args, {
             cwd: cwd,
-            env: { ...process.env, PYTHONUNBUFFERED: "1" },
+            env: { ...process.env, PYTHONUNBUFFERED: "1", LUXEDGE_BACKEND_PORT: String(PYTHON_PORT) },
             windowsHide: true,
             detached: false
         });
 
+        backendOutput.length = 0;
+        backendExit = null;
+        rememberBackendOutput(`Komut: ${executable} ${args.join(' ')} (port ${PYTHON_PORT})`);
+
         pythonProcess.stdout.on('data', (data) => {
             const msg = data.toString().trim();
-            if (msg) console.log(`[Python] ${msg}`);
+            if (msg) { console.log(`[Python] ${msg}`); rememberBackendOutput(msg); }
         });
 
         pythonProcess.stderr.on('data', (data) => {
             const msg = data.toString().trim();
-            if (msg) console.error(`[Python] ${msg}`);
+            if (msg) { console.error(`[Python] ${msg}`); rememberBackendOutput(msg); }
         });
 
         const startedProcess = pythonProcess;
         pythonProcess.on('close', (code) => {
             if (pythonProcess === startedProcess) pythonProcess = null;
+            backendExit = code;
             console.log(`[LuxEdge] Python kapandı (kod: ${code})`);
         });
 
         pythonProcess.on('error', (err) => {
+            backendExit = -1;
+            rememberBackendOutput(`Başlatma hatası: ${err.message}`);
             console.error(`[LuxEdge] Python başlatılamadı: ${err.message}`);
         });
 
@@ -180,8 +215,11 @@ function startPython() {
             if (app.isQuitting || pythonProcess !== startedProcess) { resolve(false); return; }
             attempts++;
             pythonGet('/api/status', 2000)
-                .then(() => {
-                    console.log(`[LuxEdge] Python hazır! (${attempts} deneme)`);
+                .then(status => {
+                    console.log(`[LuxEdge] Python hazır! (${attempts} deneme, port ${PYTHON_PORT})`);
+                    if (status && status.backend_version && status.backend_version !== APP_VERSION) {
+                        console.warn(`[LuxEdge] Backend sürümü ${status.backend_version}, uygulama ${APP_VERSION}. Eski bir backend yanıt veriyor olabilir.`);
+                    }
                     resolve(true);
                 })
                 .catch(() => {
@@ -303,7 +341,7 @@ function createTray() {
 
     const contextMenu = Menu.buildFromTemplate([
         {
-            label: '🖥️ LuxEdge Kontrol Paneli',
+            label: 'LuxEdge Kontrol Paneli',
             click: () => {
                 showControlPanel();
                 if (!mainWindow) createWindow();
@@ -311,11 +349,11 @@ function createTray() {
         },
         { type: 'separator' },
         {
-            label: '🔄 Yeniden Başlat',
+            label: 'Yeniden Başlat',
             click: () => { requestQuit(true); }
         },
         {
-            label: '❌ Çıkış',
+            label: 'Çıkış',
             click: () => { requestQuit(); }
         }
     ]);
@@ -357,7 +395,13 @@ function registerIpcHandlers() {
     ipcMain.handle('get-status', async () => {
         // The backend also serves the bounded manual UDP/HTTP test on this server.
         try { return await pythonGet('/api/status', 7000); }
-        catch (e) { return { connection: 'bağlantı yok', connectivity: { state: 'backend_unavailable' }, running: false, last_error: "Python sunucusuna erişilemiyor..." }; }
+        catch (e) {
+            return {
+                connection: 'bağlantı yok', connectivity: { state: 'backend_unavailable' }, running: false,
+                last_error: "Python sunucusuna erişilemiyor...",
+                backend_port: PYTHON_PORT, backend_exit: backendExit, backend_output: backendOutput.slice(-12),
+            };
+        }
     });
 
     ipcMain.handle('scan-network', async () => {
@@ -415,9 +459,16 @@ function registerIpcHandlers() {
         catch (e) { return { logs: [] }; }
     });
 
-    ipcMain.handle('test-wemos-connection', async () => {
-        try { return await pythonGet('/api/test-wemos-connection', 7000); }
+    ipcMain.handle('test-wemos-connection', async (event, target) => {
+        const query = target && target.ip ? `?ip=${encodeURIComponent(target.ip)}&port=${encodeURIComponent(target.port || 7777)}` : '';
+        try { return await pythonGet('/api/test-wemos-connection' + query, 7000); }
         catch (e) { return { success: false, message: "Test başarısız", udp_ok: false, http_ok: false }; }
+    });
+
+    ipcMain.handle('get-wemos-status', async (event, target) => {
+        const query = target && target.ip ? `?ip=${encodeURIComponent(target.ip)}` : '';
+        try { return await pythonGet('/api/wemos/status' + query, 6000); }
+        catch (e) { return { success: false, message: "Wemos durumu alınamadı" }; }
     });
 
     ipcMain.handle('restart-app', async () => {
@@ -425,18 +476,18 @@ function registerIpcHandlers() {
         return { success: true, message: "Yeniden başlatılıyor..." };
     });
 
-    ipcMain.handle('wemos-restart', async () => {
-        try { return await pythonPost('/api/wemos/restart', {}, 5000); }
+    ipcMain.handle('wemos-restart', async (event, target) => {
+        try { return await pythonPost('/api/wemos/restart', target || {}, 5000); }
         catch (e) { return { success: false, message: "Wemos yeniden başlatılamadı" }; }
     });
 
-    ipcMain.handle('wemos-sleep', async () => {
-        try { return await pythonPost('/api/wemos/sleep', {}, 5000); }
+    ipcMain.handle('wemos-sleep', async (event, target) => {
+        try { return await pythonPost('/api/wemos/sleep', target || {}, 5000); }
         catch (e) { return { success: false, message: "Wemos uyku modu değiştirilemedi" }; }
     });
 
-    ipcMain.handle('wemos-reset-wifi', async () => {
-        try { return await pythonPost('/api/wemos/reset_wifi', {}, 5000); }
+    ipcMain.handle('wemos-reset-wifi', async (event, target) => {
+        try { return await pythonPost('/api/wemos/reset_wifi', target || {}, 5000); }
         catch (e) { return { success: false, message: "Wemos sıfırlama başarısız" }; }
     });
 
@@ -476,6 +527,11 @@ app.whenReady().then(async () => {
     catch (error) { console.warn('[LuxEdge] Başlangıç kaydı güncellenemedi:', error.message); }
 
     registerIpcHandlers();
+    if (!PORT_PINNED) {
+        const chosen = await findFreePort(PYTHON_PORT);
+        if (chosen !== PYTHON_PORT) console.warn(`[LuxEdge] Port ${PYTHON_PORT} dolu (başka bir LuxEdge çalışıyor olabilir); ${chosen} kullanılacak.`);
+        PYTHON_PORT = chosen;
+    }
     await startPython();
     if (app.isQuitting) return;
     createTray();
