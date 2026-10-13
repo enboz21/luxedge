@@ -232,3 +232,74 @@ class StripSyncTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BackendIdentityTests(unittest.TestCase):
+    def test_status_reports_backend_version_and_port(self):
+        handler = object.__new__(backend.WebUIHandler)
+        handler._safe_send_json = mock.Mock()
+        with mock.patch.object(backend, "get_status", return_value={"uptime_start": 0}):
+            handler.serve_status()
+        result = handler._safe_send_json.call_args.args[0]
+        self.assertEqual(result["backend_version"], backend.APP_VERSION)
+        self.assertEqual(result["backend_port"], backend.BACKEND_PORT)
+
+    def test_pinned_port_never_falls_back_to_a_neighbour(self):
+        with mock.patch.object(backend, "BACKEND_PORT_STRICT", True), \
+             mock.patch.object(backend, "HTTPServer", side_effect=OSError("Address already in use")) as server:
+            self.assertIsNone(backend.start_web_server(8888))
+        server.assert_called_once()
+        with mock.patch.object(backend, "BACKEND_PORT_STRICT", False), \
+             mock.patch.object(backend, "HTTPServer", side_effect=[OSError("Address already in use"), mock.Mock()]) as server, \
+             mock.patch.object(backend.threading, "Thread"):
+            self.assertIsNotNone(backend.start_web_server(8888))
+        self.assertEqual(server.call_args_list[1].args[0], ("127.0.0.1", 8889))
+
+
+class WemosTargetTests(unittest.TestCase):
+    def request(self, path, method="GET", body=None):
+        handler = object.__new__(backend.WebUIHandler)
+        data = json.dumps(body).encode("utf-8") if body is not None else b""
+        handler.path = path
+        handler.headers = {"Content-Length": str(len(data))}
+        handler.rfile = io.BytesIO(data)
+        handler._safe_send_json = mock.Mock()
+        handler.send_error = mock.Mock(side_effect=AssertionError("Unexpected HTTP error"))
+        getattr(handler, "do_" + method)()
+        return handler._safe_send_json.call_args.args[0]
+
+    def test_actions_target_requested_ip_or_fall_back_to_main_wemos(self):
+        urls = []
+
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def read(self): return b"SLEEP_ON"
+
+        def urlopen(url, timeout=None):
+            urls.append(url)
+            return Response()
+
+        with mock.patch.dict(backend.app_status, {"wemos_ip": "192.0.2.1"}), \
+             mock.patch.object(backend.urllib.request, "urlopen", side_effect=urlopen):
+            self.assertTrue(self.request("/api/wemos/restart", "POST", {"ip": "192.0.2.9"})["success"])
+            self.assertTrue(self.request("/api/wemos/reset_wifi", "POST")["success"])
+            self.assertTrue(self.request("/api/wemos/sleep", "POST", {"ip": "192.0.2.9"})["success"])
+            self.assertFalse(self.request("/api/wemos/restart", "POST", {"ip": "not-an-ip"})["success"])
+        self.assertEqual(urls, ["http://192.0.2.9/restart", "http://192.0.2.1/reset_wifi", "http://192.0.2.9/toggle_sleep"])
+
+    def test_secondary_connection_test_does_not_touch_main_tracker(self):
+        tracker = backend.Connectivity()
+        tracker.reset("192.0.2.1", 7777)
+        with mock.patch.object(backend, "connectivity", tracker), \
+             mock.patch.dict(backend.app_status, {"wemos_ip": "192.0.2.1", "wemos_port": 7777}), \
+             mock.patch.object(backend, "test_wemos_connection", return_value=(True, True, "ok")) as probe:
+            result = self.request("/api/test-wemos-connection?ip=192.0.2.9&port=7778")
+        probe.assert_called_once_with("192.0.2.9", 7778)
+        self.assertTrue(result["success"])
+        self.assertIsNone(result["applied"])
+        self.assertEqual(tracker.snapshot()["state"], "checking")
+        with mock.patch.object(backend, "get_wemos_status", return_value={"ip": "192.0.2.9", "firmware_version": "1.7.0"}) as status:
+            info = self.request("/api/wemos/status?ip=192.0.2.9")
+        status.assert_called_once_with("192.0.2.9", timeout=3)
+        self.assertEqual(info["status"]["firmware_version"], "1.7.0")

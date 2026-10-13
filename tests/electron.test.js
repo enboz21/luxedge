@@ -265,3 +265,19 @@ test('autostart read and write use the same executable and arguments', () => {
         assert.equal(written.path, f.loginReads[0].path);
     }
 });
+
+test('backend port avoids a port held by another LuxEdge and is handed to the backend', async () => {
+    const net = require('node:net');
+    const blocker = net.createServer();
+    await new Promise(resolve => blocker.listen({ port: 0, host: '127.0.0.1' }, resolve));
+    const busy = blocker.address().port;
+    const f = fixture();
+    try {
+        const chosen = await vm.runInContext(`findFreePort(${busy})`, f.context);
+        assert.equal(chosen, busy + 1);
+        vm.runInContext(`PYTHON_PORT = ${chosen}; startPython()`, f.context);
+        assert.equal(f.spawned[0].args[2].env.LUXEDGE_BACKEND_PORT, String(chosen));
+    } finally {
+        blocker.close();
+    }
+});

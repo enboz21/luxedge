@@ -108,6 +108,20 @@ h1, h2, h3 { font-weight: 600; letter-spacing: -0.01em; }
 .page.active { display: block; }
 .page-logs.active { display: flex; flex-direction: column; }
 
+.banner {
+    margin: 0 24px 12px;
+    padding: 9px 12px;
+    border: 1px solid rgba(224, 176, 76, 0.45);
+    border-radius: var(--radius-sm);
+    background: rgba(224, 176, 76, 0.08);
+    color: var(--warn);
+    font-size: 12px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    font-family: var(--mono);
+    user-select: text;
+}
+
 /* Status pill */
 .status-pill {
     display: inline-flex; align-items: center; gap: 8px;
