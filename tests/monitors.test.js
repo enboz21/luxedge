@@ -50,9 +50,9 @@ test('monitor options preserve selection including a disconnected display', () =
 });
 
 test('status polls do not rebuild lists; explicit newer generation updates both selectors', () => {
-    const html = fs.readFileSync(path.join(__dirname, '../web_ui/index.html'), 'utf8');
-    const start = html.indexOf('        function applyMonitorSnapshot(');
-    const end = html.indexOf('        const refreshMonitors', start);
+    const html = fs.readFileSync(path.join(__dirname, '../web_ui/app.js'), 'utf8');
+    const start = html.indexOf('function applyMonitorSnapshot(');
+    const end = html.indexOf('const refreshMonitors', start);
     const led = select('1'), device = select('2');
     let renders = 0;
     const context = vm.createContext({

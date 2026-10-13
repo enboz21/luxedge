@@ -195,10 +195,13 @@ test('slow status requests cannot overlap and recover after rejection', async ()
 
 test('renderer and preload agree on visibility bridge and scripts parse', () => {
     const html = fs.readFileSync(path.join(__dirname, '../web_ui/index.html'), 'utf8');
+    const app = fs.readFileSync(path.join(__dirname, '../web_ui/app.js'), 'utf8');
     const preload = fs.readFileSync(path.join(__dirname, '../preload.js'), 'utf8');
     assert.match(preload, /exposeInMainWorld\('luxedge'/);
     assert.match(preload, /onWindowVisibility/);
-    assert.match(html, /window\.luxedge\.onWindowVisibility/);
+    assert.match(app, /window\.luxedge\.onWindowVisibility/);
+    assert.match(html, /<script src="app.js"><\/script>/);
+    new vm.Script(app);
     for (const match of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) new vm.Script(match[1]);
 });
 

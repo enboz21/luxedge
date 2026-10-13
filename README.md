@@ -4,7 +4,7 @@
     <strong>Monitör arkası LED aydınlatmasını otomatik olarak yöneten, Electron + Python tabanlı masaüstü uygulaması</strong>
   </p>
   <p align="center">
-    <img src="https://img.shields.io/badge/version-1.6.4.2-blue?style=flat-square" alt="Version">
+    <img src="https://img.shields.io/badge/version-1.7.0-blue?style=flat-square" alt="Version">
     <img src="https://img.shields.io/badge/platform-Windows-0078D6?style=flat-square&logo=windows&logoColor=white" alt="Platform">
     <img src="https://img.shields.io/badge/license-CC%20BY--NC%204.0-green?style=flat-square" alt="License">
     <img src="https://img.shields.io/badge/hardware-ESP8266%20(Wemos)-red?style=flat-square" alt="Hardware">
@@ -41,6 +41,7 @@
 | Özellik | Açıklama |
 |---|---|
 | 🖥️ **Gerçek Zamanlı Ekran Yakalama** | Ekran kenarlarını ayarlanabilir kare hızında analiz eder; varsayılan hedef 60 FPS'tir |
+| 🧩 **Çoklu Wemos & Şerit Görevleri** | Birden fazla Wemos; her cihaz ambilight ya da şerit bazlı görev alır, her şeride ayrı renk/animasyon atanır |
 | 🖥️ **Çoklu Monitör & Ekran Seçimi** | Çift/üçlü monitörlü sistemlerde LED'lerin takip edeceği ekranı arayüzden seçme imkanı |
 | 🔄 **Elle Monitör Yenileme** | Liste açılışta yüklenir; sonraki taramalar yalnız monitör seçicisinin yanındaki Güncelle düğmesiyle yapılır |
 | 📡 **Otomatik Ağ Taraması** | Wemos cihazını ağda otomatik bulur (UDP Discovery) |
@@ -56,15 +57,31 @@
 | 🖱️ **Sistem Tepsisi** | Arka planda çalışır, tepsiden erişilir |
 | ⚙️ **Windows Optimizasyonları** | Paylaşılan kare yakalama, toplu RGB paketleme, tek uygulama kilidi ve gizli arayüzde durdurulan sorgular |
 
-### Çoklu Wemos geçişi (güvenli mod)
+### Çoklu Wemos ve şerit bazlı görevler (v1.7.0)
 
-- Mevcut tek-Wemos ayarı korunur; çoklu mod kapalıyken uygulama eski `wemos_ip` UDP yolunu kullanır.
-- Yeni cihazlar önce pasif kaydedilir. Her cihaz bir monitöre ve kendi dört kenar LED toplamına atanır.
-- Çoklu mod yalnız etkin cihazların Wemos `/status` içindeki `led_count` değeri uygulamadaki LED toplamıyla eşleştiğinde açılabilir.
-- Çoklu mod kapatıldığında worker'ın sonraki ayar kontrolünde tekli moda dönülür. LED toplamı doğrulanmayan cihazlar gönderim listesinden çıkarılır; mevcut ağ doğrulaması worker içinde beklemeye neden olabilir.
-- Wemos pin/şerit ayarı firmware'in kendi kurulum sayfasında kalır; PC uygulaması yalnız toplam LED sayısını doğrular.
+Her Wemos bir **görev** ile kaydedilir:
 
----
+| Görev | Davranış |
+|---|---|
+| **Ambilight** | Dört kenar düzeni. Wemos'taki tüm şeritler tek zincir gibi ekran akışı alır (Ana Wemos bu görevdedir). |
+| **Şerit bazlı** | Wemos'a bağlı her fiziksel şerit (en fazla 4) ayrı görev alır: ekran akışı, kapalı, sabit renk, nefes alma, gökkuşağı, kovalama, parıltı. |
+
+- Şerit LED sayısı ve pini Wemos'un hotspot kurulumunda belirlenir; uygulama bunları
+  **Wemos'tan şeritleri al** ile `/status` üzerinden çeker ve kullanıcı yalnız mod, renk,
+  parlaklık, hız ve (ekran akışı için) monitör + kenar + yön seçer.
+- Ekran akışı dışındaki modlar **cihaz üzerinde** çalışır ve EEPROM'a yazılır; bilgisayar
+  kapalıyken de sürer. Ayarlar `POST /segments` ile Wemos'a gönderilir (`Wemos'a uygula`
+  veya şerit ayarı değişince otomatik).
+- PC her karede yalnız akış modundaki şeritlerin LED'lerini firmware sırasıyla art arda
+  gönderir; firmware bu veriyi sadece akış şeritlerine dağıtır, yerel modlara dokunmaz.
+- Çoklu mod yalnız etkin cihazların akış LED sayısı firmware `stream_led_count` değeriyle
+  (eski firmware için `led_count`) eşleştiğinde açılabilir. Doğrulama sonucu worker
+  içinde önbelleğe alınır; aynı ayarla cihaz tekrar sorgulanmaz, ulaşılamayan cihaz 15 sn
+  aralıkla yeniden denenir.
+- Ana Wemos kaydı tekli ayarlardan (IP, monitör, kenar LED'leri) her zaman tazelenir;
+  çoklu mod kapalıyken eski `wemos_ip` UDP yolu aynen kullanılır.
+- Şerit modları için Wemos firmware **1.7.0** gerekir; eski firmware'de şerit bazlı cihazlar
+  "firmware desteklemiyor" uyarısıyla devre dışı kalır, ambilight cihazları etkilenmez.
 
 ## 🛠️ Donanım Gereksinimleri
 
@@ -101,7 +118,7 @@ Linux desteği, derleme betiği ve paket hedefleri kaldırılmıştır. Mevcut h
 
 ## 🚀 Kurulum
 
-Hazır paket için `LuxEdge Setup 1.6.4.2.exe` dosyasını kullanın. Aşağıdaki adımlar geliştiriciler içindir.
+Hazır paket için `LuxEdge Setup 1.7.0.exe` dosyasını kullanın. Aşağıdaki adımlar geliştiriciler içindir.
 
 ### 1. Projeyi İndirin
 ```powershell
@@ -158,7 +175,7 @@ Electron için `node_modules/electron/dist` kullanılır; derleme önbellekleri 
 altında tutulur. Gerekli NSIS araçları önbellekte yoksa ilk derlemede indirilir.
 Paketlenen backend'in SHA256 özeti kaynak binary ile karşılaştırılır.
 
-Çıktı: **`dist/LuxEdge Setup 1.6.4.2.exe`**. Bu işlem kurulum veya canlı uygulama testi yapmaz.
+Çıktı: **`dist/LuxEdge Setup 1.7.0.exe`**. Bu işlem kurulum veya canlı uygulama testi yapmaz.
 `npm run dist` yalnız Electron paketini üretir; Python kaynakları değiştiğinde güncel
 backend'in pakete girmesi için yukarıdaki tam derleme betiğini kullanın.
 
@@ -235,7 +252,10 @@ luxedge/
 ├── requirements.txt     # Python bağımlılıkları
 ├── ambilight_config.json # Başlangıç ayarları; aktif ayarlar APPDATA altında
 ├── web_ui/
-│   ├── index.html       # Kontrol paneli arayüzü
+│   ├── index.html       # Kontrol paneli yapısı (sayfalar: Genel Bakış, Ambilight, Cihazlar, Wemos, Günlük, Sistem)
+│   ├── styles.css       # Koyu tema ve bileşen stilleri
+│   ├── app.js           # Arayüz mantığı (cihaz/şerit düzenleyici, durum, OTA, günlük)
+│   ├── connection.js    # Bağlantı durumu sunumu
 │   ├── polling.js       # Görünürlük ve çakışmayan sorgu yönetimi
 │   └── monitors.js      # Monitör seçenekleri ve Güncelle düğmesi
 ├── scripts/             # Windows derleme ve paket doğrulama araçları
@@ -285,7 +305,8 @@ luxedge/
 | `/api/config` | POST | Konfigürasyon günceller |
 | `/api/logs` | GET | Son log kayıtlarını döndürür |
 | `/api/devices` | GET / POST | Cihazları listeler / yeni pasif cihaz kaydeder |
-| `/api/devices/{id}` | PUT / DELETE | Cihazı günceller / siler |
+| `/api/devices/{id}` | PUT / DELETE | Cihazı günceller / siler (`role`, `strips` dahil) |
+| `/api/devices/{id}/sync` | POST | Wemos `/status` okur, şerit sayısı/pinleri kayda işler, `push:true` ise şerit ayarlarını Wemos'a yazar |
 | `/api/devices/mode` | POST | Çoklu cihaz modunu değiştirir |
 | `/api/devices/scan` | GET | Ağdaki Wemos cihazlarını arar |
 | `/api/devices/validation` | GET | Cihazların firmware LED toplamlarını doğrular |
@@ -295,14 +316,29 @@ luxedge/
 
 ---
 
+## 🔌 Wemos Firmware HTTP Uçları (1.7.0)
+
+| Uç | Method | Açıklama |
+|---|---|---|
+| `/status` | GET | Durum; `strips[]` içinde her şeridin `mode`, `color`, `brightness`, `speed` değeri, ayrıca `stream_led_count` ve `segments_supported` |
+| `/segments` | GET | Yalnız şerit ayarları |
+| `/segments` | POST | `sN_mode`, `sN_color`, `sN_brightness`, `sN_speed` (N=1..4) alanlarıyla ayar; `save=1` EEPROM'a yazar |
+
+Şerit modları: `stream`, `off`, `solid`, `breathe`, `rainbow`, `chase`, `twinkle`.
+
 ## 📝 Sürüm Geçmişi
+
+### v1.7.0 (Güncel)
+- 🧩 **Şerit bazlı Wemos görevleri:** Her fiziksel şerit ayrı mod alır (ekran akışı, kapalı, sabit renk, nefes alma, gökkuşağı, kovalama, parıltı). Yerel modlar firmware üzerinde çalışır, EEPROM'da saklanır ve PC kapalıyken de sürer.
+- 📡 **Firmware 1.7.0:** `/segments` uçları, `/status` içinde şerit modları ve `stream_led_count`; UDP akışı yalnız akış modundaki şeritlere dağıtılır, bekleme halkası ve veri kesilme kurtarması yalnız akış şeritleri için çalışır.
+- 🧠 **Cihaz modeli:** `role: ambilight | strips`, şerit kayıtları, `POST /api/devices/{id}/sync` ile Wemos'tan şerit sayısı/pin alma ve ayar gönderme; Ana Wemos kaydı tekli ayarlardan otomatik tazelenir; worker doğrulaması önbelleklenerek kare döngüsündeki HTTP beklemeleri kaldırıldı.
+- 🎛️ **Yeni arayüz:** Sayfalı düzen (Genel Bakış, Ambilight, Cihazlar, Wemos, Günlük, Sistem), sade koyu tema, şerit düzenleyici, uygulama içi onay pencereleri; emoji kullanımı kaldırıldı.
+- 🧪 Testler: 55 Python + 23 JavaScript.
 
 ### Önceki Windows optimizasyonu (8 Ekim 2026)
 
-Uygulama ve kurulum dosyası sürümü `1.6.4.2` olarak yayımlanır. Electron Builder'ın
-SemVer kısıtı nedeniyle `package.json` içindeki teknik paket metadata sürümü `1.6.4`,
-uygulamanın görünen sürümü ise `luxedgeVersion: 1.6.4.2` olarak tutulur. Wemos firmware
-sürümü bundan bağımsızdır.
+Bu optimizasyon 1.6.4.2 sürümüyle yayımlanmıştı; güncel sürüm 1.7.0'dır. Wemos firmware
+sürümü uygulama sürümünden bağımsızdır.
 
 - **Monitör listesi:** Açılışta yükleme, elle Güncelle düğmesi ve durum sorgularında önbellek kullanımı.
 - **Görüntü işleme:** Kare başına ayar okuması ve gereksiz gölge yakalamalar kaldırıldı; aynı monitörün görüntüsü kare içinde paylaşılıyor.
@@ -312,7 +348,7 @@ sürümü bundan bağımsızdır.
 - **Platform:** Linux kodu, binary'si ve paket hedefleri kaldırıldı. Windows paketinde sistem Python fallback'i bulunmuyor.
 - **Uyumluluk:** Mevcut Wemos bağlantı/tarama davranışı, firmware ve kullanıcı ayarları korundu.
 
-### v1.6.4.2 (Güncel)
+### v1.6.4.2
 - 🛠️ **Tepsi Başlangıcı:** Windows otomatik başlangıcında LuxEdge paneli göstermeden tepside çalışır; normal açılış ve tepsi menüsü paneli açar.
 - 🎨 **Doğru Bağlantı Göstergesi:** Bağlılık artık FPS veya gönderilen paketlerle değil, Wemos UDP `PONG` / HTTP `/status` yanıtıyla belirlenir. Yeşil, sarı, mavi, kırmızı ve gri durumlar yazı ile aynı kaynaktan güncellenir.
 - 🧪 **Sürüm ve Paket Doğrulaması:** Backend, Electron paketi ve NSIS kurulum dosyası aynı `1.6.4.2` sürümüyle yeniden oluşturulur ve kaynak eşleşmesi doğrulanır.
@@ -426,7 +462,8 @@ Kaynak kurulum adımlarından sonra:
 node --test tests/electron.test.js tests/monitors.test.js
 ```
 
-10 Ekim 2026 doğrulamasında **42 Python + 23 JavaScript testi (65 toplam)** geçti.
+13 Ekim 2026 doğrulamasında **55 Python + 23 JavaScript testi (78 toplam)** geçti
+(`tests/test_strip_devices.py` şerit doğrulama, kare üretimi ve eşitleme uçlarını kapsar).
 Testler yapay ekran görüntüleri, taklit ağ/süreç nesneleri ve geçici ayarlar kullanır;
 gerçek Wemos'a bağlanmaz, ekran yakalamaz veya kurulum çalıştırmaz.
 Renk ve LED sırası, tüm 0–255 parlaklık değerleri, monitör yenileme, gizli arayüz,
@@ -434,7 +471,7 @@ süreç yönetimi ve paket içeriği kontrol edilmiştir.
 
 Paketli uygulama kontrollü yerel UDP cihazı ve gerçek Wemos üzerinde ayrıca kontrol edilmiştir. Gerçek Windows yeniden başlatma/oturum açma testi yapılmamıştır.
 
-`wemos_code/wemos_code.ino` içindeki `FIRMWARE_VERSION` hâlâ `1.6.4` olarak kalır; Wemos firmware'ini de `1.6.4.2` yapmak isterseniz bu dosyada **10. satırı** elle değiştirip Arduino ile yeniden derleyip flaşlamanız gerekir. Masaüstü paket sürümü değişince mevcut firmware otomatik güncellenmez.
+`wemos_code/wemos_code.ino` artık `FIRMWARE_VERSION 1.7.0`; depodaki `firmware_D2.bin` ve `lush_backend.exe` önceki sürümden kalmadır ve Arduino IDE / `scripts/build-windows.ps1` ile yeniden derlenmelidir. Şerit modları için Wemos'a yeni firmware yüklenmesi şarttır; eski firmware ambilight görevinde çalışmaya devam eder.
 Windows takılmalarının giderildiği veya gerçek CPU/GPU yükünün azaldığı doğrulanmış değildir.
 
 - [Windows optimizasyonu ve doğrulama raporu](docs/WINDOWS_OPTIMIZATION.md)

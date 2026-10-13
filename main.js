@@ -405,6 +405,11 @@ function registerIpcHandlers() {
         catch (e) { return { success: false, message: "Cihaz silinemedi" }; }
     });
 
+    ipcMain.handle('sync-device', async (event, id, options) => {
+        try { return await pythonPost(`/api/devices/${encodeURIComponent(id)}/sync`, options || {}, 15000); }
+        catch (e) { return { success: false, message: "Wemos ile eşitleme başarısız" }; }
+    });
+
     ipcMain.handle('get-logs', async () => {
         try { return await pythonGet('/api/logs', 2000); }
         catch (e) { return { logs: [] }; }

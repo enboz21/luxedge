@@ -141,7 +141,7 @@ class SingleWemosRegressionTests(unittest.TestCase):
         self.assertEqual(saved_config["wemos_ip"], "192.168.1.50")
 
     def test_renderer_uses_backend_device_api_without_local_storage(self):
-        renderer_source = Path("web_ui/index.html").read_text(encoding="utf-8")
+        renderer_source = Path("web_ui/app.js").read_text(encoding="utf-8")
 
         self.assertIn("api.getDevices()", renderer_source)
         self.assertIn("api.createDevice(getDevicePayload())", renderer_source)
