@@ -6,10 +6,11 @@ let electronVisible = true;
 const poller = createPoller(() => !document.hidden && electronVisible);
 const fetchStatus = poller.add('status', fetchStatusData, 1500);
 const fetchLogs = poller.add('logs', fetchLogsData, 2000);
+const fetchOverview = poller.add('overview', fetchOverviewData, 1500);
 
 // Firmware sınırı: wemos_code.ino içindeki MAX_LED_COUNT ile aynı olmalı
 const MAX_LED_COUNT = 170;
-const UI_VERSION = '1.7.1';
+const UI_VERSION = '1.7.2';
 
 const STRIP_MODES = ['stream', 'off', 'solid', 'breathe', 'rainbow', 'chase', 'twinkle'];
 const STRIP_MODE_LABELS = {
@@ -26,7 +27,7 @@ const ROLE_LABELS = { ambilight: 'Ambilight', strips: 'Şerit bazlı' };
 const LEGACY_ID = 'legacy-primary';
 
 const PAGES = {
-    overview: ['Genel Bakış', 'Bağlantı, performans ve ekran düzeni'],
+    overview: ['Genel Bakış', 'Tüm cihazlar, canlı renkler ve animasyonlar'],
     ambilight: ['Ambilight', 'Ana Wemos için ekran kenarı LED ayarları'],
     devices: ['Cihazlar', 'Birden fazla Wemos ve şerit bazlı görevler'],
     wemos: ['Wemos', 'Bağlantı, cihaz işlemleri ve firmware'],
@@ -81,6 +82,7 @@ function showPage(name) {
     document.getElementById('page-title').textContent = PAGES[name][0];
     document.getElementById('page-subtitle').textContent = PAGES[name][1];
     if (name === 'logs') fetchLogs();
+    if (name === 'overview') fetchOverview();
     if (name === 'devices') fetchDevices();
     if (name === 'wemos') loadWemosInfo();
 }
@@ -267,6 +269,28 @@ let deviceValidations = new Map();
 let multiDeviceEnabled = false;
 let editorStrips = [];
 let stripApplyTimer = null;
+
+async function fetchOverviewData() {
+    if (currentPage !== 'overview') return;
+    const container = document.getElementById('overview-devices');
+    const message = document.getElementById('overview-message');
+    try {
+        const result = await api.getDevicesOverview();
+        if (!result.success) throw new Error(result.message || 'Durum alınamadı');
+        DeviceDashboard.render(container, result.devices || [], result.multi_device_enabled, device => {
+            showPage('devices');
+            setDeviceForm(device);
+        });
+        document.getElementById('overview-device-count').textContent = `${(result.devices || []).length} cihaz`;
+        message.textContent = 'Durumlar otomatik yenilenir · Hareketli efektler temsili önizlemedir.';
+    } catch (error) {
+        // Never leave stale cards looking online after the backend disappears.
+        container.dataset.signature = '';
+        DeviceDashboard.render(container, deviceRecords.map(device => ({ ...device, live: null, frame: null })),
+            multiDeviceEnabled, device => { showPage('devices'); setDeviceForm(device); });
+        message.textContent = 'Arka plan hizmetine ulaşılamıyor. Güncel cihaz durumu bilinmiyor.';
+    }
+}
 
 function deviceFormValue(id, fallback = '') {
     const element = document.getElementById(id);

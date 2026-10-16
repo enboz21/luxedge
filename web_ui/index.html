@@ -58,7 +58,7 @@
                 </button>
             </nav>
             <div class="sidebar-footer">
-                <div class="sidebar-version" id="app-version">Sürüm 1.7.1</div>
+                <div class="sidebar-version" id="app-version">Sürüm 1.7.2</div>
             </div>
         </aside>
 
@@ -66,7 +66,7 @@
             <header class="page-header">
                 <div>
                     <h1 id="page-title">Genel Bakış</h1>
-                    <p id="page-subtitle">Bağlantı, performans ve ekran düzeni</p>
+                    <p id="page-subtitle">Tüm cihazlar, canlı renkler ve animasyonlar</p>
                 </div>
                 <div class="status-pill">
                     <span id="status-dot" class="status-dot"></span>
@@ -122,14 +122,14 @@
                             <div class="preview-screen"><span id="pv-monitor">Monitör</span></div>
                         </div>
                     </div>
-                    <div class="card">
-                        <div class="card-head">
-                            <h2>Cihazlar</h2>
-                            <button class="btn btn-ghost btn-sm" data-goto="devices">Yönet</button>
-                        </div>
-                        <div class="list" id="ov-device-list"></div>
-                        <p class="hint" id="ov-multi-hint"></p>
-                    </div>
+                </div>
+                <div class="card-head overview-heading">
+                    <h2>Cihaz merkezi <span class="muted" id="overview-device-count"></span></h2>
+                    <button class="btn btn-ghost btn-sm" data-goto="devices">Cihazları yönet</button>
+                </div>
+                <p class="hint" id="overview-message" role="status">Cihaz durumları yükleniyor…</p>
+                <div class="device-overview-grid" id="overview-devices" aria-label="Kayıtlı cihazlar">
+                    <div class="list-empty">Cihazlar yükleniyor…</div>
                 </div>
             </section>
 
@@ -415,7 +415,7 @@
                     </div>
                     <div class="card">
                         <div class="card-head"><h2>Uygulama</h2></div>
-                        <div class="kv"><span class="kv-label">Arayüz sürümü</span><span class="kv-value">1.7.1</span></div>
+                        <div class="kv"><span class="kv-label">Arayüz sürümü</span><span class="kv-value">1.7.2</span></div>
                         <div class="kv"><span class="kv-label">Arka plan hizmeti</span><span class="kv-value" id="backend-version">-</span></div>
                         <div class="kv"><span class="kv-label">Ayar dosyası</span><span class="kv-value">%APPDATA%\LuxEdge\ambilight_config.json</span></div>
                         <div class="kv"><span class="kv-label">Günlük dosyası</span><span class="kv-value">%APPDATA%\LuxEdge\luxedge.log</span></div>
@@ -445,6 +445,7 @@
     <script src="polling.js"></script>
     <script src="monitors.js"></script>
     <script src="connection.js"></script>
+    <script src="overview.js"></script>
     <script src="app.js"></script>
 </body>
 

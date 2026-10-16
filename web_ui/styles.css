@@ -420,6 +420,38 @@ input[type="range"] { width: 100%; height: 20px; accent-color: var(--accent); cu
 @keyframes toast-in { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
 
 /* Dialog */
+.overview-heading { margin-top: 24px; margin-bottom: 4px; }
+.overview-heading h2 { font-size: 15px; }
+#overview-device-count { margin-left: 8px; font-size: 12px; font-weight: 400; }
+.device-overview-grid { display: grid; align-items: start; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 16px; margin: 14px 0 24px; }
+.device-overview { min-width: 0; }
+.device-overview .card-head { align-items: start; gap: 12px; }
+.device-overview h3 { font-size: 14px; overflow-wrap: anywhere; }
+.device-overview .chip { flex-shrink: 0; }
+.device-address { margin-top: -6px; }
+.overview-strip { padding: 12px 0; border-top: 1px solid var(--border); }
+.overview-strip .label-row { font-size: 12px; margin-bottom: 10px; }
+.overview-color { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 11px; }
+.overview-color code { user-select: text; overflow-wrap: anywhere; }
+.overview-strip .hint { margin-bottom: 0; }
+.effect-state { font-size: 12px; margin: 12px 0; color: var(--text-2); }
+.effect-state.active { color: var(--ok); }
+.effect-preview { display: flex; gap: 5px; padding: 18px 12px; border-radius: 8px; background: #101216; overflow: hidden; }
+.effect-led { flex: 1; min-width: 0; height: 12px; border-radius: 4px; box-shadow: 0 0 12px var(--effect-color); }
+.effect-preview.active .effect-led { animation-duration: var(--effect-duration); animation-delay: var(--effect-phase); animation-iteration-count: infinite; }
+.effect-breathe.active .effect-led { animation-name: led-breathe; animation-timing-function: ease-in-out; }
+.effect-rainbow.active .effect-led { background: hsl(calc(var(--led-index) * 24), 85%, 55%) !important; animation-name: led-rainbow; animation-timing-function: linear; }
+.effect-chase.active .effect-led { animation-name: led-chase; animation-delay: calc(var(--effect-phase) - var(--led-index) * .12s); }
+.effect-twinkle.active .effect-led { animation-name: led-twinkle; animation-delay: calc(var(--effect-phase) - var(--led-index) * .37s); }
+.effect-preview.paused { opacity: .45; }
+.effect-preview.off .effect-led { box-shadow: none; }
+@keyframes led-breathe { 0%, 100% { opacity: .12; } 50% { opacity: 1; } }
+@keyframes led-rainbow { to { filter: hue-rotate(360deg); } }
+@keyframes led-chase { 0%, 30%, 100% { opacity: .1; } 15% { opacity: 1; } }
+@keyframes led-twinkle { 0%, 35%, 70%, 100% { opacity: .1; } 20%, 65% { opacity: 1; } }
+.page:not(.active) .effect-led { animation-play-state: paused; }
+@media (prefers-reduced-motion: reduce) { .effect-preview .effect-led { animation: none !important; } }
+
 .dialog { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55); z-index: 10000; display: flex; align-items: center; justify-content: center; }
 .dialog-box { width: 380px; background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius); padding: 18px; box-shadow: 0 16px 48px rgba(0,0,0,0.5); }
 .dialog-box h3 { font-size: 14px; margin-bottom: 6px; }
