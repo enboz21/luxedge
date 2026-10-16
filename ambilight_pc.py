@@ -18,7 +18,7 @@ from monitor_catalog import MonitorCatalog
 from connectivity import Connectivity, legacy_connection
 
 monitor_catalog = MonitorCatalog()
-APP_VERSION = "1.7.1"
+APP_VERSION = "1.7.2"
 BACKEND_PORT = int(os.environ.get('LUXEDGE_BACKEND_PORT', '8888'))
 # Electron portu kendisi seçip ortam değişkeniyle verir; o zaman başka porta kaymak yasak.
 BACKEND_PORT_STRICT = 'LUXEDGE_BACKEND_PORT' in os.environ
@@ -40,6 +40,7 @@ from pathlib import Path
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 import http.server
 import struct
+from device_overview import device_overview
 
 # ============================================================
 # LOG SİSTEMİ
@@ -1517,6 +1518,8 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
                 self.handle_devices_scan()
             elif self.path == '/api/devices/validation':
                 self.handle_devices_validation()
+            elif self.path == '/api/devices/overview':
+                self.handle_devices_overview()
             elif self.path == '/api/scan':
                 self.serve_scan()
             elif self.path == '/api/logs':
@@ -1697,6 +1700,14 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
         """Ağdaki cihazları listeler; kullanıcı seçmeden config'e yazmaz."""
         devices = [{"ip": ip, "port": 7777} for ip in find_all_wemos_on_network()]
         self._safe_send_json({"success": True, "devices": devices})
+
+    def handle_devices_overview(self):
+        config = normalize_config_for_multi_device(load_config() or {})
+        self._safe_send_json({
+            "success": True,
+            "multi_device_enabled": config["multi_device_enabled"],
+            "devices": device_overview.snapshot(config["wemos_devices"], get_wemos_status),
+        })
 
     def handle_devices_validation(self):
         """Kayıtlı cihazların firmware LED toplamlarını doğrular."""
@@ -2641,9 +2652,15 @@ def ambilight_worker(config):
                         if not multi_data:
                             continue
                         sock.sendto(multi_data, (multi_device["ip"], multi_device["port"]))
+                        device_overview.record_frame(multi_device['id'], multi_device['ip'],
+                                                     multi_device['port'], multi_data,
+                                                     'solid' if IDLE_MODE and not is_full else 'stream',
+                                                     strips=stream_strips(multi_device))
                         packets_sent += 1
                 else:
                     sock.sendto(data, (WEMOS_IP, WEMOS_PORT))
+                    device_overview.record_frame('legacy-primary', WEMOS_IP, WEMOS_PORT, data,
+                                                 'solid' if IDLE_MODE and not is_full else 'stream')
                     packets_sent += 1
                 fps_counter += 1
 

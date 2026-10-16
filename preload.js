@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld('luxedge', {
 
     // Pasif çoklu-Wemos cihaz kayıtları
     getDevices: () => ipcRenderer.invoke('get-devices'),
+    getDevicesOverview: () => ipcRenderer.invoke('get-devices-overview'),
     scanDevices: () => ipcRenderer.invoke('scan-devices'),
     validateDevices: () => ipcRenderer.invoke('validate-devices'),
     setMultiDeviceMode: (enabled) => ipcRenderer.invoke('set-multi-device-mode', enabled),

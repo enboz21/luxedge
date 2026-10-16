@@ -32,7 +32,8 @@ def verify():
     frame_code = archive.open_embedded_archive('PYZ.pyz').extract('frame_processing')
     catalog_code = archive.open_embedded_archive('PYZ.pyz').extract('monitor_catalog')
     connectivity_code = archive.open_embedded_archive('PYZ.pyz').extract('connectivity')
-    for name, code in [('ambilight_pc', backend_code), ('frame_processing', frame_code), ('monitor_catalog', catalog_code), ('connectivity', connectivity_code)]:
+    overview_code = archive.open_embedded_archive('PYZ.pyz').extract('device_overview')
+    for name, code in [('ambilight_pc', backend_code), ('frame_processing', frame_code), ('monitor_catalog', catalog_code), ('connectivity', connectivity_code), ('device_overview', overview_code)]:
         source = (ROOT / f'{name}.py').read_text(encoding='utf-8')
         assert same_code(code, compile(source, f'{name}.py', 'exec')), f'Stale code: {name}'
     print('Backend bytecode matches current source; SHA256:', hashes[0])

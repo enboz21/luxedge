@@ -419,6 +419,11 @@ function registerIpcHandlers() {
         catch (e) { return { success: false, devices: [], message: "Cihazlar yüklenemedi" }; }
     });
 
+    ipcMain.handle('get-devices-overview', async () => {
+        try { return await pythonGet('/api/devices/overview', 2000); }
+        catch (e) { return { success: false, message: 'Cihaz durumları alınamadı' }; }
+    });
+
     ipcMain.handle('scan-devices', async () => {
         try { return await pythonGet('/api/devices/scan', 6000); }
         catch (e) { return { success: false, devices: [], message: "Cihaz taraması başarısız" }; }

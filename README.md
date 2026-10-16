@@ -4,7 +4,7 @@
     <strong>Monitör arkası LED aydınlatmasını otomatik olarak yöneten, Electron + Python tabanlı masaüstü uygulaması</strong>
   </p>
   <p align="center">
-    <img src="https://img.shields.io/badge/version-1.7.1-blue?style=flat-square" alt="Version">
+    <img src="https://img.shields.io/badge/version-1.7.2-blue?style=flat-square" alt="Version">
     <img src="https://img.shields.io/badge/platform-Windows-0078D6?style=flat-square&logo=windows&logoColor=white" alt="Platform">
     <img src="https://img.shields.io/badge/license-CC%20BY--NC%204.0-green?style=flat-square" alt="License">
     <img src="https://img.shields.io/badge/hardware-ESP8266%20(Wemos)-red?style=flat-square" alt="Hardware">
@@ -42,6 +42,7 @@
 |---|---|
 | 🖥️ **Gerçek Zamanlı Ekran Yakalama** | Ekran kenarlarını ayarlanabilir kare hızında analiz eder; varsayılan hedef 60 FPS'tir |
 | 🧩 **Çoklu Wemos & Şerit Görevleri** | Birden fazla Wemos; her cihaz ambilight ya da şerit bazlı görev alır, her şeride ayrı renk/animasyon atanır |
+| 🎛️ **Cihaz Merkezi** | Ana sayfada tüm cihazlar; bağlantı, HEX/RGB renk, efekt adı ve aktif/duraklatılmış/kapalı durumu, şerit başına hareketli önizleme |
 | 🖥️ **Çoklu Monitör & Ekran Seçimi** | Çift/üçlü monitörlü sistemlerde LED'lerin takip edeceği ekranı arayüzden seçme imkanı |
 | 🔄 **Elle Monitör Yenileme** | Liste açılışta yüklenir; sonraki taramalar yalnız monitör seçicisinin yanındaki Güncelle düğmesiyle yapılır |
 | 📡 **Otomatik Ağ Taraması** | Wemos cihazını ağda otomatik bulur (UDP Discovery) |
@@ -118,7 +119,7 @@ Linux desteği, derleme betiği ve paket hedefleri kaldırılmıştır. Mevcut h
 
 ## 🚀 Kurulum
 
-Hazır paket için `LuxEdge Setup 1.7.1.exe` dosyasını kullanın. Aşağıdaki adımlar geliştiriciler içindir.
+Hazır paket için `LuxEdge Setup 1.7.2.exe` dosyasını kullanın. Aşağıdaki adımlar geliştiriciler içindir.
 
 ### 1. Projeyi İndirin
 ```powershell
@@ -162,6 +163,18 @@ npm start
 
 ## 🔨 Derleme & Paketleme (Build)
 
+**Tek tıkla derleme:** Proje kökündeki `derleyici.bat` dosyasına çift tıklayın.
+Önce güncel Python kaynaklarından backend, sonra Electron ve Windows x64 kurulum
+paketi derlenir; paket içindeki backend ve arayüz dosyaları kaynaklarla doğrulanır.
+Sonuç `dist/LuxEdge Setup 1.7.2.exe` dosyasıdır. Pencere sonuç veya hata mesajını
+görmeniz için açık kalır. Betik uygulamayı kurmaz veya çalışan uygulamayı kapatmaz.
+
+Python 3 ve Node.js/npm kurulu olmalıdır. Eksik Python kütüphaneleri proje içindeki
+`.venv` ortamına, eksik Electron bağımlılıkları `npm ci` ile yüklenir; ilk hazırlık
+ve önbellekte olmayan derleme araçları için internet gerekir. Hazır Python ortamı
+gerekli kütüphaneleri içeriyorsa doğrudan kullanılır. Bir adım başarısız olursa sonraki
+adım çalıştırılmaz ve eski kurulum dosyası başarıyla oluşturulmuş gibi gösterilmez.
+
 Kaynak kurulum adımlarından sonra proje kökünde çalıştırın:
 
 ```powershell
@@ -175,7 +188,7 @@ Electron için `node_modules/electron/dist` kullanılır; derleme önbellekleri 
 altında tutulur. Gerekli NSIS araçları önbellekte yoksa ilk derlemede indirilir.
 Paketlenen backend'in SHA256 özeti kaynak binary ile karşılaştırılır.
 
-Çıktı: **`dist/LuxEdge Setup 1.7.1.exe`**. Bu işlem kurulum veya canlı uygulama testi yapmaz.
+Çıktı: **`dist/LuxEdge Setup 1.7.2.exe`**. Bu işlem kurulum veya canlı uygulama testi yapmaz.
 `npm run dist` yalnız Electron paketini üretir; Python kaynakları değiştiğinde güncel
 backend'in pakete girmesi için yukarıdaki tam derleme betiğini kullanın.
 
@@ -305,6 +318,7 @@ luxedge/
 | `/api/config` | POST | Konfigürasyon günceller |
 | `/api/logs` | GET | Son log kayıtlarını döndürür |
 | `/api/devices` | GET / POST | Cihazları listeler / yeni pasif cihaz kaydeder |
+| `/api/devices/overview` | GET | Tüm kayıtlar, son cihaz durumları ve gönderilen RGB örnekleri; ağ sorgularını arka planda başlatır |
 | `/api/devices/{id}` | PUT / DELETE | Cihazı günceller / siler (`role`, `strips` dahil) |
 | `/api/devices/{id}/sync` | POST | Wemos `/status` okur, şerit sayısı/pinleri kayda işler, `push:true` ise şerit ayarlarını Wemos'a yazar |
 | `/api/devices/mode` | POST | Çoklu cihaz modunu değiştirir |
@@ -330,7 +344,16 @@ luxedge/
 
 ## 📝 Sürüm Geçmişi
 
-### v1.7.1 (Güncel)
+### v1.7.2 (Güncel)
+- **Ana sayfa sırası:** Bağlantı, FPS, paket ve LED bilgileri en üstte, ekran düzeni hemen altında; Wemos cihaz kartları bu ana bilgilerin altında listelenir.
+- **Cihaz merkezi:** Tüm kayıtlı cihazlar ana sayfada ayrı kartlarda listelenir. Her kart cihaz adı, çevrim içi/çevrim dışı durumu, şerit başına efekt adı, HEX/RGB renk ve aktif/duraklatılmış/kapalı durumunu gösterir; cihaz düzenleyicisine doğrudan geçilir.
+- **Animasyon önizlemesi:** Nefes alma, gökkuşağı, kovalama ve parıltı kart içinde hareket eder. Yerel efektler temsili simülasyondur; firmware anlık LED pikselini veya animasyon fazını bildirmez. Sabit renk firmware'in renk/parlaklık ayarından hesaplanır. Ekran akışı cihaz/şerit başına en fazla 16 gerçek gönderim örneğiyle gösterilir; bu örnekler cihazın UDP paketini aldığını kanıtlamaz.
+- **Durum yenileme:** Görünür ana sayfa 1,5 saniyede bir yenilenir. Salt okunur Wemos `/status` sorguları ayrı iş parçacığında, en fazla dört cihaz paralel olacak şekilde yapılır ve sorgu bitiminden beş saniye sonra yenilenebilir. 15 saniyeden eski bağlantı verisi bilinmiyor olarak, üç saniyeden eski akış örnekleri duraklatılmış olarak gösterilir. Kapalı çoklu mod PC akışını durdurur; cihazın yerel animasyonu çalışmaya devam edebilir. Gizli pencerede sorgular durur; azaltılmış hareket tercihi animasyonu sabitler.
+- **Sürüm:** Arayüz, backend, paket ve lock dosyası 1.7.2. Firmware 1.7.0 olarak kalır; yeniden flash gerekmez. Yeni kaynakların çalışması için Python backend ve Electron paketi yeniden derlenmelidir; sürüm değişikliği mevcut `lush_backend.exe` dosyasını güncellemez.
+- **Eski firmware uyumluluğu:** 1.6.4 firmware fiziksel şeritleri bildirir fakat efekt alanları göndermez. Bu şeritler ekran akışı olarak gösterilir; renkler PC'nin son gönderiminden alınır.
+- **Doğrulama:** 65 Python ve 31 JavaScript testi; sahte cihazlarla tarayıcıda dört kart, hareketli animasyon, dar pencere, azaltılmış hareket ve cihaz düzenleyicisine geçiş doğrulandı. Windows backend ve 1.7.2 kurulum paketi derlendi; backend bytecode ve ASAR dosyaları güncel kaynaklarla karşılaştırıldı. Kurulu uygulamanın backend sürümü 1.7.2 ve yeni cihaz merkezi API'si doğrulandı; görsel donanım/LED testi yapılmadı.
+
+### v1.7.1
 - 🛠️ **Wemos sayfasında cihaz seçimi:** Yeniden başlatma, uyku, Wi-Fi sıfırlama, bağlantı testi ve OTA yüklemesi seçilen cihaza gider; cihaz bilgisi kartı firmware sürümü, sinyal ve şeritleri gösterir.
 - 🔌 **Port ve sürüm güvenliği:** Electron boş portu seçip backend'e verir; backend komşu porta kaymaz. `/api/status` içindeki `backend_version` arayüzle uyuşmazsa ya da backend başlamazsa panelde uyarı ve son çıktı satırları gösterilir.
 - 🎛️ **Şerit akışı:** Şerit bazlı cihaz kaydedilince şeritler Wemos'tan otomatik çekilir; gönderim sonucu ve firmware desteği şeritlerin altında yazar. Doğrulama mesajı LED sayılarıyla cihaz düzenleyicide görünür.
@@ -344,7 +367,7 @@ luxedge/
 
 ### Önceki Windows optimizasyonu (8 Ekim 2026)
 
-Bu optimizasyon 1.6.4.2 sürümüyle yayımlanmıştı; güncel sürüm 1.7.1'dir. Wemos firmware
+Bu optimizasyon 1.6.4.2 sürümüyle yayımlanmıştı; güncel sürüm 1.7.2'dir. Wemos firmware
 sürümü uygulama sürümünden bağımsızdır.
 
 - **Monitör listesi:** Açılışta yükleme, elle Güncelle düğmesi ve durum sorgularında önbellek kullanımı.
