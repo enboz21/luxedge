@@ -33,7 +33,7 @@ function fixture(owns = true, options = {}) {
         exit: () => calls.push('exit'),
         relaunch: () => calls.push('relaunch'),
         isPackaged: options.packaged ?? true,
-        getPath: () => 'C:\\LuxEdge\\LuxEdge.exe',
+        getPath: name => name === 'appData' ? options.appData : 'C:\\LuxEdge\\LuxEdge.exe',
         getLoginItemSettings: settings => {
             loginReads.push(settings);
             return { openAtLogin: settings.args.length ? !!options.current : !!options.legacy,
@@ -44,7 +44,7 @@ function fixture(owns = true, options = {}) {
     const timers = new Map();
     const spawned = [];
     const processMock = new EventEmitter();
-    processMock.env = {};
+    processMock.env = { APPDATA: options.appData || 'MockAppData' };
     processMock.argv = options.argv || [];
     processMock.resourcesPath = path.resolve(__dirname, '..');
     const context = vm.createContext({
@@ -64,6 +64,9 @@ function fixture(owns = true, options = {}) {
                 return proc;
             } };
             if (name === 'http') throw new Error('Real network forbidden');
+            if (name === 'fs' && !options.appData) {
+                return { ...fs, mkdirSync: () => {}, appendFileSync: () => {} };
+            }
             return require(name);
         },
         console: { log() {}, error() {}, warn() {} }, process: processMock,
@@ -77,6 +80,66 @@ function fixture(owns = true, options = {}) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, '../main.js'), 'utf8'), context);
     return { app, context, calls, spawned, timers, readyCalls, windows, trays, loginWrites, loginReads, handlers };
 }
+
+test('Günlük recovers Electron records when the PC backend is offline', async t => {
+    const appData = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'luxedge-logs-'));
+    t.after(() => fs.rmSync(appData, { recursive: true, force: true }));
+    const f = fixture(true, { appData });
+    vm.runInContext('delete process.env.APPDATA', f.context);
+    vm.runInContext("logElectron('ERROR', 'TEST_ERROR', 'Test kaydı', 'Deneme');", f.context);
+    const logPath = path.join(appData, 'LuxEdge', 'luxedge-electron.jsonl');
+    const original = fs.readFileSync(logPath, 'utf8');
+    fs.writeFileSync(logPath + '.1', 'x'.repeat(2 * 1024 * 1024) + '\n' + original);
+    fs.writeFileSync(logPath, '{"partial');
+
+    const restarted = fixture(true, { appData });
+    vm.runInContext('registerIpcHandlers()', restarted.context);
+    const result = await restarted.handlers.get('get-logs')();
+    assert.equal(result.available, false);
+    assert.equal(result.electronPersistent, true);
+    assert.equal(result.logs.length, 1);
+    assert.equal(result.logs[0].code, 'TEST_ERROR');
+    assert.match(result.logs[0].id, /^electron:/);
+    vm.runInContext("logElectron('INFO', 'AFTER_PARTIAL', 'Yeni kayıt', 'Deneme');", restarted.context);
+    const reopened = fixture(true, { appData });
+    vm.runInContext('registerIpcHandlers()', reopened.context);
+    const next = await reopened.handlers.get('get-logs')();
+    assert.deepEqual(Array.from(next.logs, entry => entry.code), ['TEST_ERROR', 'AFTER_PARTIAL']);
+});
+
+test('Günlük keeps cleared records hidden when the backend goes offline', async () => {
+    const appSource = fs.readFileSync(path.join(__dirname, '../web_ui/app.js'), 'utf8');
+    const start = appSource.indexOf('// --- Günlük ---');
+    const end = appSource.indexOf('// --- Başlangıç ---', start);
+    const context = vm.createContext({
+        api: {},
+        currentPage: 'logs',
+        document: { getElementById: () => ({ children: [] }) }
+    });
+    vm.runInContext(appSource.slice(start, end), context);
+    vm.runInContext(`
+        showLogStatus = () => {};
+        renderLogs = () => { visibleLogs = logCache.filter(isAfterLogClear); };
+        const cached = { id: 7, timestamp: '2026-01-01T00:00:00.000Z' };
+        const electron = { id: 'electron:old', timestamp: '2026-01-01T00:00:00.000Z' };
+        logCache = [cached, electron];
+        clearLogs();
+        api.getLogs = async () => ({ available: false, logs: [
+            electron,
+            { id: 'electron:new', timestamp: new Date(clearedLogTime + 1).toISOString() }
+        ] });
+    `, context);
+    await vm.runInContext('fetchLogsData()', context);
+    assert.equal(vm.runInContext('logCache.length', context), 3);
+    assert.equal(vm.runInContext('visibleLogs.length', context), 1);
+    assert.equal(vm.runInContext('visibleLogs[0].id', context), 'electron:new');
+    vm.runInContext(`api.getLogs = async () => ({ available: true, logs: [
+        cached, electron, { id: 8, timestamp: new Date(clearedLogTime + 1).toISOString() }
+    ] });`, context);
+    await vm.runInContext('fetchLogsData()', context);
+    assert.equal(vm.runInContext('visibleLogs.length', context), 1);
+    assert.equal(vm.runInContext('visibleLogs[0].id', context), 8);
+});
 
 test('second application never starts backend or readiness work', () => {
     const f = fixture(false);

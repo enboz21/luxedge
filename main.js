@@ -9,12 +9,103 @@ const http = require('http');
 const net = require('net');
 const path = require('path');
 const fs = require('fs');
+const { randomUUID } = require('crypto');
 
 let mainWindow;
 let pythonProcess;
 // Backend başlatılamazsa son çıktı satırları ve çıkış kodu arayüzde gösterilir.
 const backendOutput = [];
 let backendExit = null;
+const LOG_LIMIT = 1000;
+const ELECTRON_LOG_BYTES = 2 * 1024 * 1024;
+const ELECTRON_LOG_BACKUPS = 5;
+let electronLogs;
+let electronLogsReadable = true;
+let electronLogsWritable = true;
+let electronLogNeedsSeparator = false;
+
+function electronLogPath() {
+    return path.join(process.env.APPDATA || app.getPath('appData'), 'LuxEdge', 'luxedge-electron.jsonl');
+}
+
+function readElectronLogTail(file) {
+    const descriptor = fs.openSync(file, 'r');
+    try {
+        const size = fs.fstatSync(descriptor).size;
+        const offset = Math.max(0, size - ELECTRON_LOG_BYTES);
+        const buffer = Buffer.alloc(size - offset);
+        const length = fs.readSync(descriptor, buffer, 0, buffer.length, offset);
+        const contents = buffer.toString('utf8', 0, length);
+        if (!offset) return contents;
+        const firstNewline = contents.indexOf('\n');
+        return firstNewline < 0 ? '' : contents.slice(firstNewline + 1);
+    } finally {
+        fs.closeSync(descriptor);
+    }
+}
+
+function readElectronLogs() {
+    if (electronLogs) return electronLogs;
+    electronLogs = [];
+    const file = electronLogPath();
+    for (let index = 0; index <= ELECTRON_LOG_BACKUPS && electronLogs.length < LOG_LIMIT; index++) {
+        try {
+            const contents = readElectronLogTail(index ? file + '.' + index : file);
+            if (!index && !contents.endsWith('\n')) electronLogNeedsSeparator = true;
+            const lines = contents.split(/\r?\n/);
+            for (let n = lines.length - 1; n >= 0 && electronLogs.length < LOG_LIMIT; n--) {
+                if (!lines[n]) continue;
+                try {
+                    const entry = JSON.parse(lines[n]);
+                    if (entry?.source === 'electron' && typeof entry.timestamp === 'string') electronLogs.push(entry);
+                } catch {
+                    // A partial line from an interrupted write does not invalidate the rest.
+                }
+            }
+        } catch (error) {
+            if (error.code !== 'ENOENT') {
+                electronLogsReadable = false;
+                console.warn('[LuxEdge] Electron günlük dosyası okunamadı:', error.message);
+            }
+        }
+    }
+    return electronLogs.reverse();
+}
+
+function logElectron(level, code, msg, explanation, details = '') {
+    const entry = {
+        id: 'electron:' + randomUUID(),
+        timestamp: new Date().toISOString(),
+        level,
+        msg,
+        source: 'electron',
+        code,
+        explanation,
+        details: String(details).slice(0, 2000)
+    };
+    const recent = readElectronLogs();
+    recent.push(entry);
+    if (recent.length > LOG_LIMIT) recent.shift();
+    const file = electronLogPath();
+    const line = JSON.stringify(entry) + '\n';
+    try {
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        if (fs.existsSync(file) && fs.statSync(file).size + Buffer.byteLength(line) + 1 > ELECTRON_LOG_BYTES) {
+            for (let index = ELECTRON_LOG_BACKUPS; index > 0; index--) {
+                const previous = index === 1 ? file : file + '.' + (index - 1);
+                if (fs.existsSync(previous)) fs.renameSync(previous, file + '.' + index);
+            }
+            electronLogNeedsSeparator = false;
+        }
+        fs.appendFileSync(file, (electronLogNeedsSeparator ? '\n' : '') + line, 'utf8');
+        electronLogNeedsSeparator = false;
+        electronLogsWritable = true;
+    } catch (error) {
+        electronLogsWritable = false;
+        electronLogNeedsSeparator = true;
+        console.warn('[LuxEdge] Electron günlüğüne yazılamadı:', error.message);
+    }
+}
 function rememberBackendOutput(text) {
     for (const line of text.split(/\r?\n/)) {
         if (!line.trim()) continue;
@@ -152,6 +243,8 @@ function pythonRequest(endpoint, method, body, timeout) {
 function startPython() {
     return new Promise((resolve) => {
         console.log("[LuxEdge] Python backend başlatılıyor...");
+        logElectron('INFO', 'BACKEND_STARTING', 'Arka plan hizmeti başlatılıyor.',
+            'LuxEdge, PC hizmetini başlatmayı deniyor.');
 
         let executable, args, cwd;
 
@@ -162,6 +255,8 @@ function startPython() {
             cwd = process.resourcesPath;
             if (!fs.existsSync(executable)) {
                 console.error('[LuxEdge] Windows backend bulunamadı. Kurulumu onarın.');
+                logElectron('ERROR', 'BACKEND_FILE_MISSING', 'Arka plan hizmetinin dosyası bulunamadı.',
+                    'LuxEdge kurulum dizininde hizmeti başlatmak için gereken dosya yok.', 'lush_backend.exe');
                 resolve(false);
                 return;
             }
@@ -197,16 +292,26 @@ function startPython() {
         });
 
         const startedProcess = pythonProcess;
+        let spawnFailed = false;
         pythonProcess.on('close', (code) => {
-            if (pythonProcess === startedProcess) pythonProcess = null;
+            const wasActive = pythonProcess === startedProcess;
+            if (wasActive) pythonProcess = null;
             backendExit = code;
             console.log(`[LuxEdge] Python kapandı (kod: ${code})`);
+            if (!app.isQuitting && !spawnFailed && wasActive) {
+                logElectron('ERROR', 'BACKEND_EXITED', 'Arka plan hizmeti durdu.',
+                    'LuxEdge çalışırken hizmet süreci kapandı.',
+                    [`Çıkış kodu: ${code ?? 'bilinmiyor'}`, ...backendOutput.slice(-4)].join('\n'));
+            }
         });
 
         pythonProcess.on('error', (err) => {
+            spawnFailed = true;
             backendExit = -1;
             rememberBackendOutput(`Başlatma hatası: ${err.message}`);
             console.error(`[LuxEdge] Python başlatılamadı: ${err.message}`);
+            logElectron('ERROR', 'BACKEND_SPAWN_FAILED', 'Arka plan hizmeti başlatılamadı.',
+                'İşletim sistemi hizmet sürecini başlatamadı.', err.message);
         });
 
         // Python sunucusunun hazır olmasını bekle
@@ -217,14 +322,25 @@ function startPython() {
             pythonGet('/api/status', 2000)
                 .then(status => {
                     console.log(`[LuxEdge] Python hazır! (${attempts} deneme, port ${PYTHON_PORT})`);
+                    logElectron('INFO', 'BACKEND_READY', 'Arka plan hizmeti hazır.',
+                        'PC hizmeti çalışma durumu sorgusuna yanıt verdi.');
                     if (status && status.backend_version && status.backend_version !== APP_VERSION) {
                         console.warn(`[LuxEdge] Backend sürümü ${status.backend_version}, uygulama ${APP_VERSION}. Eski bir backend yanıt veriyor olabilir.`);
+                        logElectron('WARNING', 'BACKEND_VERSION_MISMATCH', 'Uygulama ve hizmet sürümleri farklı.',
+                            'Hizmetin bildirdiği sürüm, açık olan LuxEdge uygulamasının sürümünden farklı.',
+                            `Hizmet: ${status.backend_version}, uygulama: ${APP_VERSION}`);
                     }
                     resolve(true);
                 })
                 .catch(() => {
                     if (attempts < 60) setTimeout(checkReady, 1000);
-                    else { console.warn('[LuxEdge] Python zaman aşımı'); resolve(false); }
+                    else {
+                        console.warn('[LuxEdge] Python zaman aşımı');
+                        logElectron('ERROR', 'BACKEND_START_TIMEOUT', 'Arka plan hizmeti zamanında yanıt vermedi.',
+                            'LuxEdge, başlatma süresi içinde hizmetten çalışma durumu alamadı.',
+                            backendOutput.slice(-4).join('\n'));
+                        resolve(false);
+                    }
                 });
         };
         setTimeout(checkReady, 1000);
@@ -460,8 +576,20 @@ function registerIpcHandlers() {
     });
 
     ipcMain.handle('get-logs', async () => {
-        try { return await pythonGet('/api/logs', 2000); }
-        catch (e) { return { logs: [] }; }
+        let backend;
+        try {
+            backend = await pythonGet('/api/logs?limit=' + LOG_LIMIT, 2000);
+        } catch {
+            backend = { available: false };
+        }
+        const logs = [...(backend?.logs || []), ...readElectronLogs()];
+        logs.sort((a, b) => (Date.parse(a.timestamp) || 0) - (Date.parse(b.timestamp) || 0));
+        return {
+            ...backend,
+            available: Array.isArray(backend?.logs) && backend.available !== false,
+            electronPersistent: electronLogsReadable && electronLogsWritable,
+            logs: logs.slice(-LOG_LIMIT)
+        };
     });
 
     ipcMain.handle('test-wemos-connection', async (event, target) => {

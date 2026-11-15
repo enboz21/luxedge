@@ -11,14 +11,14 @@ import copy
 import ipaddress
 import uuid
 import logging
-import logging.handlers
-from collections import deque
+from diagnostic_logs import DiagnosticLogHandler, HISTORY_LIMIT
+from wemos_diagnostics import WemosDiagnostics
 from frame_processing import FrameCapture, edge_colors, edge_rgb, pack_rgb, solid_frame, frame_delay
 from monitor_catalog import MonitorCatalog
 from connectivity import Connectivity, legacy_connection
 
 monitor_catalog = MonitorCatalog()
-APP_VERSION = "1.7.2"
+APP_VERSION = "1.7.3"
 BACKEND_PORT = int(os.environ.get('LUXEDGE_BACKEND_PORT', '8888'))
 # Electron portu kendisi seçip ortam değişkeniyle verir; o zaman başka porta kaymak yasak.
 BACKEND_PORT_STRICT = 'LUXEDGE_BACKEND_PORT' in os.environ
@@ -46,65 +46,20 @@ from device_overview import device_overview
 # LOG SİSTEMİ
 # ============================================================
 
-# Bellek içi log tamponu (son 200 satır)
-_log_buffer = deque(maxlen=200)
-_log_buffer_lock = threading.Lock()
-
-class _MemoryLogHandler(logging.Handler):
-    """Logları hem belleğe hem de print'e yazar"""
-    def emit(self, record):
-        try:
-            msg = self.format(record)
-            entry = {
-                "time": time.strftime('%H:%M:%S', time.localtime(record.created)),
-                "level": record.levelname,
-                "msg": record.getMessage()
-            }
-            with _log_buffer_lock:
-                _log_buffer.append(entry)
-            # Konsola da yaz
-            print(msg, flush=True)
-        except Exception:
-            pass
-
-def _get_log_dir():
-    """Log dosyası dizinini döndürür"""
-    return os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'LuxEdge')
-
 def setup_logger():
-    """Logger'ı rotating dosya + bellek handler ile kur"""
-    log_dir = _get_log_dir()
-    os.makedirs(log_dir, exist_ok=True)
-    log_path = os.path.join(log_dir, 'luxedge.log')
-
     logger = logging.getLogger('luxedge')
     logger.setLevel(logging.DEBUG)
     logger.propagate = False
-
-    if logger.handlers:
-        return logger  # Zaten kurulmuş
-
-    fmt = logging.Formatter('[%(asctime)s] [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
-
-    # Rotating file handler (500 KB, 3 yedek)
-    try:
-        fh = logging.handlers.RotatingFileHandler(
-            log_path, maxBytes=512*1024, backupCount=3, encoding='utf-8'
-        )
-        fh.setFormatter(fmt)
-        logger.addHandler(fh)
-    except Exception:
-        pass
-
-    # Bellek + konsol handler
-    mh = _MemoryLogHandler()
-    mh.setFormatter(logging.Formatter('[%(levelname)s] %(message)s'))
-    logger.addHandler(mh)
-
+    log_dir = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'LuxEdge')
+    if not any(isinstance(handler, DiagnosticLogHandler) for handler in logger.handlers):
+        handler = DiagnosticLogHandler(log_dir)
+        handler.setFormatter(logging.Formatter('[%(levelname)s] %(message)s'))
+        logger.addHandler(handler)
     return logger
 
-# Global logger
+
 log = setup_logger()
+log_history = next(handler for handler in log.handlers if isinstance(handler, DiagnosticLogHandler))
 
 # Windows'ta subprocess çağrılarında CMD penceresi açılmasını engelle
 CREATE_NO_WINDOW = 0x08000000
@@ -182,7 +137,11 @@ def load_config():
             with open(config_path, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except Exception as e:
-            print(f"[HATA] Konfigürasyon dosyası okunamadı: {e}")
+            log.error("[CONFIG] Konfigürasyon dosyası okunamadı: %s", e, extra={
+                "code": "config_read_failed",
+                "explanation": "PC, LuxEdge ayar dosyasını okuyamadı.",
+                "possible_causes": ["Nedeni belirlenemedi"],
+            })
             # Yedekten okumayı dene
             backup_path = config_path + '.bak'
             if os.path.exists(backup_path):
@@ -223,7 +182,11 @@ def save_config(config):
         os.replace(tmp_path, config_path)
         return True
     except Exception as e:
-        print(f"[HATA] Konfigürasyon dosyası kaydedilemedi: {e}")
+        log.error("[CONFIG] Konfigürasyon dosyası kaydedilemedi: %s", e, extra={
+            "code": "config_save_failed",
+            "explanation": "PC, LuxEdge ayar dosyasına yazamadı.",
+            "possible_causes": ["Nedeni belirlenemedi"],
+        })
         try:
             os.unlink(tmp_path)
         except Exception:
@@ -695,7 +658,7 @@ def find_wemos_ip_on_network(progress_callback=None):
                 try:
                     sock.sendto(message, (target_ip, 7777))
                 except Exception as e:
-                    print(f"Yayın hatası ({target_ip}): {e}")
+                    log.warning("[TARAMA] UDP yayın hatası (%s): %s", target_ip, e)
             
             # Cevap bekle
             start_time = time.time()
@@ -720,12 +683,12 @@ def find_wemos_ip_on_network(progress_callback=None):
                 except socket.timeout:
                     break # Bu turda cevap gelmedi, tekrar dene
                 except Exception as e:
-                    print(f"Dinleme hatası: {e}")
+                    log.warning("[TARAMA] UDP dinleme hatası: %s", e)
                     break
         
         sock.close()
     except Exception as e:
-        print(f"Socket hatası: {e}")
+        log.error("[TARAMA] UDP soket hatası: %s", e)
 
     # --- YÖNTEM 2: UDP Unicast Subnet Taraması (Fallback) ---
     if not found_ip and local_ip:
@@ -780,7 +743,7 @@ def find_wemos_ip_on_network(progress_callback=None):
                                 f.cancel()
                             return found_ip
             except Exception as e:
-                print(f"Unicast tarama hatası: {e}")
+                log.warning("[TARAMA] Unicast tarama hatası: %s", e)
 
     return found_ip
 
@@ -1522,7 +1485,7 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
                 self.handle_devices_overview()
             elif self.path == '/api/scan':
                 self.serve_scan()
-            elif self.path == '/api/logs':
+            elif self.path.split('?', 1)[0] == '/api/logs':
                 self.serve_logs()
             elif self.path.startswith('/api/test-wemos-connection'):
                 self.handle_test_wemos_connection()
@@ -1678,10 +1641,13 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
         self._safe_send_json(status)
 
     def serve_logs(self):
-        """Son logları JSON olarak sun"""
-        with _log_buffer_lock:
-            logs = list(_log_buffer)
-        self._safe_send_json({"logs": logs})
+        params = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        try:
+            limit = max(1, min(HISTORY_LIMIT, int(params.get('limit', [HISTORY_LIMIT])[0])))
+            after = max(0, int(params['after'][0])) if 'after' in params else None
+        except ValueError:
+            limit, after = HISTORY_LIMIT, None
+        self._safe_send_json(log_history.snapshot(after, limit))
 
     def handle_devices_list(self):
         """Pasif çoklu-cihaz kayıtlarını döndür; tekli config'i değiştirme."""
@@ -2003,7 +1969,7 @@ def restart_app():
         python = sys.executable
         subprocess.Popen([python] + sys.argv, close_fds=True)
     except Exception as e:
-        print(f"[HATA] Yeniden başlatma başarısız: {e}")
+        log.error("[PC] Yeniden başlatma başarısız: %s", e)
     finally:
         os._exit(0)
 
@@ -2033,10 +1999,10 @@ def start_web_server(port=8888):
                 print(f"[WEB UI] http://localhost:{alt_port} adresinde çalışıyor")
                 return server
             except Exception:
-                print(f"[HATA] Web UI başlatılamadı!")
+                log.error("[WEB UI] Web UI başlatılamadı")
                 return None
         else:
-            print(f"[HATA] Web UI başlatılamadı: {e}")
+            log.error("[WEB UI] Web UI başlatılamadı: %s", e)
             return None
 
 # ============================================================
@@ -2430,6 +2396,26 @@ def ambilight_worker(config):
     # v1.6.1: Her yeniden başlatmada sayaçları sıfırla
     packets_sent = 0
     errors = 0
+    frame_errors_since_log = 0
+    next_frame_error_log = 0
+    low_fps_since_log = 0
+    next_low_fps_log = 0
+
+    def log_frame_error_summary():
+        log.warning("[WORKER] Ek kare işleme hataları: %s", frame_errors_since_log, extra={
+            "code": "frame_failed",
+            "explanation": "Son uyarıdan sonra ekran karesi yakalama, işleme veya gönderme hataları tekrarlandı.",
+            "possible_causes": ["Nedeni belirlenemedi"],
+            "count": frame_errors_since_log,
+        })
+
+    def log_low_fps_summary():
+        log.warning("[WORKER] Ek düşük FPS ölçümleri: %s", low_fps_since_log, extra={
+            "code": "low_fps",
+            "explanation": "Son uyarıdan sonraki bazı ölçümlerde ekran işleme hızı hedefe göre düşük kaldı.",
+            "possible_causes": ["Nedeni belirlenemedi"],
+            "count": low_fps_since_log,
+        })
     fps_counter = 0
     fps_timer = time.perf_counter()
     update_status("errors", 0)
@@ -2666,31 +2652,70 @@ def ambilight_worker(config):
 
                 # Her 2 saniyede bir FPS ve paket sayısını güncelle
                 current_time = time.perf_counter()
+                if frame_errors_since_log and current_time >= next_frame_error_log:
+                    log_frame_error_summary()
+                    frame_errors_since_log = 0
                 if current_time - fps_timer >= 2.0:
                     actual_fps = fps_counter / (current_time - fps_timer)
                     update_status("actual_fps", round(actual_fps, 1))
                     update_status("packets_sent", packets_sent)
                     fps_counter = 0
                     fps_timer = current_time
-                    if actual_fps < 25:
-                        log.warning(f"[WORKER] Düşük FPS uyarısı: {actual_fps:.1f} FPS (hedef: {FPS})")
+                    low_fps_threshold = min(25, FPS * 0.8)
+                    if actual_fps < low_fps_threshold:
+                        low_fps_since_log += 1
+                        if current_time >= next_low_fps_log:
+                            log.warning("[WORKER] Düşük FPS: %.1f FPS (hedef: %s)", actual_fps, FPS, extra={
+                                "code": "low_fps",
+                                "explanation": f"PC'nin ölçtüğü ekran işleme hızı {low_fps_threshold:g} FPS eşiğinin altında.",
+                                "possible_causes": ["Nedeni belirlenemedi"],
+                                "details": {"fps": round(actual_fps, 1), "target_fps": FPS,
+                                            "threshold_fps": low_fps_threshold},
+                                "count": low_fps_since_log,
+                            })
+                            low_fps_since_log = 0
+                            next_low_fps_log = current_time + 10
+                    elif low_fps_since_log:
+                        log_low_fps_summary()
+                        low_fps_since_log = 0
 
                 # v1.6.2: Adaptive sleep - timeBeginPeriod(1) sayesinde 1ms hassasiyetle uyuyabiliriz
                 time.sleep(frame_delay(frame_start, time.perf_counter(), sleep_time))
 
             except Exception as e:
                 errors += 1
+                frame_errors_since_log += 1
                 update_status("errors", errors)
                 update_status("last_error", str(e))
-                log.error(f"[WORKER] Frame hatası: {e}")
+                now = time.perf_counter()
+                if now >= next_frame_error_log:
+                    log.error("[WORKER] Frame hatası: %s", e, extra={
+                        "code": "frame_failed",
+                        "explanation": "Ekran karesi yakalanırken, işlenirken veya gönderilirken hata oluştu.",
+                        "possible_causes": ["Nedeni belirlenemedi"],
+                        "details": {"error_type": type(e).__name__},
+                        "count": frame_errors_since_log,
+                    })
+                    frame_errors_since_log = 0
+                    next_frame_error_log = now + 10
                 if running:
                     time.sleep(1)  # Hata durumunda biraz bekle
                 else:
                     break
     except Exception as e:
+        log.error("[WORKER] Akış işçisi durdu: %s", e, extra={
+            "code": "stream_worker_failed",
+            "explanation": "PC'nin LED akışını işleyen arka plan işçisi hata nedeniyle durdu.",
+            "possible_causes": ["Nedeni belirlenemedi"],
+            "details": {"error_type": type(e).__name__},
+        })
         update_status("connection", "bağlantı hatası")
         update_status("last_error", str(e))
     finally:
+        if frame_errors_since_log:
+            log_frame_error_summary()
+        if low_fps_since_log:
+            log_low_fps_summary()
         if timer_started:
             try:
                 ctypes.windll.winmm.timeEndPeriod(1)
@@ -2708,6 +2733,32 @@ def ambilight_worker(config):
 # ============================================================
 # ANA PROGRAM
 # ============================================================
+
+def diagnostic_devices():
+    try:
+        config = load_config()
+    except OSError:
+        return []
+    normalized = normalize_config_for_multi_device(config)
+    primary = legacy_config_to_primary_device(normalized)
+    devices = list(normalized['wemos_devices'])
+    if primary and not normalized['multi_device_enabled']:
+        devices.insert(0, primary)
+    seen = set()
+    result = []
+    for device in devices:
+        if not isinstance(device, dict) or not device.get('enabled'):
+            continue
+        ip, device_id = device.get('ip'), device.get('id')
+        if not isinstance(ip, str) or not ip or not isinstance(device_id, str) or not device_id:
+            continue
+        device_id = device_id[:128]
+        if ip in seen or device_id in seen:
+            continue
+        seen.update((ip, device_id))
+        result.append({'id': device_id, 'name': str(device.get('name') or device_id)[:128], 'ip': ip})
+    return result
+
 
 def main():
     """Ana program"""
@@ -2800,16 +2851,28 @@ def main():
     ambilight_thread = threading.Thread(target=ambilight_worker, args=(config,), daemon=False)
     ambilight_thread.start()
     
-    # Sistem tepsi ikonunu oluştur (--no-tray argümanı yoksa)
-    no_tray = '--no-tray' in sys.argv
-    if not no_tray and PYSTRAY_AVAILABLE:
-        icon = setup_tray_icon(config)
-        if icon:
-            icon.run()
+    diagnostic_stop = threading.Event()
+    diagnostics = WemosDiagnostics(log, log_history.snapshot()['logs'], diagnostic_devices)
+    diagnostic_thread = threading.Thread(target=diagnostics.run, args=(diagnostic_stop,),
+                                         name='wemos-diagnostics', daemon=True)
+    diagnostic_thread.start()
+    log.info('LuxEdge PC arka ucu başlatıldı', extra={'code': 'pc_started'})
+    try:
+        # Sistem tepsi ikonunu oluştur (--no-tray argümanı yoksa)
+        no_tray = '--no-tray' in sys.argv
+        if not no_tray and PYSTRAY_AVAILABLE:
+            icon = setup_tray_icon(config)
+            if icon:
+                icon.run()
+            else:
+                _run_console_mode(config, TOTAL_LEDS, WEMOS_IP, WEMOS_PORT, FPS)
         else:
             _run_console_mode(config, TOTAL_LEDS, WEMOS_IP, WEMOS_PORT, FPS)
-    else:
-        _run_console_mode(config, TOTAL_LEDS, WEMOS_IP, WEMOS_PORT, FPS)
+    finally:
+        diagnostic_stop.set()
+        diagnostic_thread.join(timeout=2)
+        running = False
+
 
 def _run_console_mode(config, total_leds, wemos_ip, wemos_port, fps):
     """Tray icon olmadan konsol modunda çalışır"""

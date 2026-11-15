@@ -58,7 +58,7 @@
                 </button>
             </nav>
             <div class="sidebar-footer">
-                <div class="sidebar-version" id="app-version">Sürüm 1.7.2</div>
+                <div class="sidebar-version" id="app-version">Sürüm 1.7.3</div>
             </div>
         </aside>
 
@@ -392,11 +392,32 @@
                         <h2>Sistem günlüğü</h2>
                         <div class="row">
                             <label class="check"><input type="checkbox" id="log-autoscroll" checked><span>Otomatik kaydır</span></label>
-                            <button class="btn btn-ghost btn-sm" onclick="clearLogs()">Temizle</button>
+                            <button class="btn btn-ghost btn-sm" onclick="clearLogs()">Görünümü temizle</button>
                             <button class="btn btn-ghost btn-sm" onclick="downloadLogs()">İndir</button>
                         </div>
                     </div>
-                    <div id="log-entries" class="log-entries"></div>
+                    <div class="log-filters" oninput="renderLogs()">
+                        <select id="log-source" class="input" aria-label="Kayıt kaynağı">
+                            <option value="">Tüm kaynaklar</option>
+                            <option value="pc">PC</option>
+                            <option value="wemos">Wemos</option>
+                            <option value="electron">Uygulama</option>
+                        </select>
+                        <select id="log-device" class="input" aria-label="Cihaz">
+                            <option value="">Tüm cihazlar</option>
+                        </select>
+                        <select id="log-level" class="input" aria-label="Kayıt seviyesi">
+                            <option value="">Tüm seviyeler</option>
+                            <option value="DEBUG">Hata ayıklama</option>
+                            <option value="INFO">Bilgi</option>
+                            <option value="WARNING">Uyarı</option>
+                            <option value="ERROR">Hata</option>
+                            <option value="CRITICAL">Kritik</option>
+                        </select>
+                        <input id="log-search" class="input" type="search" aria-label="Günlükte ara" placeholder="Günlükte ara">
+                    </div>
+                    <p id="log-status" class="hint" role="status" hidden></p>
+                    <div id="log-entries" class="log-entries">Günlük yükleniyor…</div>
                 </div>
             </section>
 
@@ -415,10 +436,10 @@
                     </div>
                     <div class="card">
                         <div class="card-head"><h2>Uygulama</h2></div>
-                        <div class="kv"><span class="kv-label">Arayüz sürümü</span><span class="kv-value">1.7.2</span></div>
+                        <div class="kv"><span class="kv-label">Arayüz sürümü</span><span class="kv-value">1.7.3</span></div>
                         <div class="kv"><span class="kv-label">Arka plan hizmeti</span><span class="kv-value" id="backend-version">-</span></div>
                         <div class="kv"><span class="kv-label">Ayar dosyası</span><span class="kv-value">%APPDATA%\LuxEdge\ambilight_config.json</span></div>
-                        <div class="kv"><span class="kv-label">Günlük dosyası</span><span class="kv-value">%APPDATA%\LuxEdge\luxedge.log</span></div>
+                        <div class="kv"><span class="kv-label">Günlük klasörü</span><span class="kv-value">%APPDATA%\LuxEdge</span></div>
                         <div class="actions">
                             <button class="btn btn-ghost" onclick="restartApp()">Uygulamayı yeniden başlat</button>
                         </div>

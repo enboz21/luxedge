@@ -10,7 +10,7 @@ const fetchOverview = poller.add('overview', fetchOverviewData, 1500);
 
 // Firmware sınırı: wemos_code.ino içindeki MAX_LED_COUNT ile aynı olmalı
 const MAX_LED_COUNT = 170;
-const UI_VERSION = '1.7.2';
+const UI_VERSION = '1.7.3';
 
 const STRIP_MODES = ['stream', 'off', 'solid', 'breathe', 'rainbow', 'chase', 'twinkle'];
 const STRIP_MODE_LABELS = {
@@ -1262,56 +1262,212 @@ async function uploadFirmware() {
 }
 
 // --- Günlük ---
+const LOG_SOURCES = { pc: 'PC', wemos: 'Wemos', electron: 'Uygulama' };
+const LOG_LEVELS = { DEBUG: 'Hata ayıklama', INFO: 'Bilgi', WARNING: 'Uyarı', ERROR: 'Hata', CRITICAL: 'Kritik' };
+const logTimeFormat = new Intl.DateTimeFormat('tr-TR', { dateStyle: 'short', timeStyle: 'medium' });
+const logDurationFormat = new Intl.NumberFormat('tr-TR', { maximumFractionDigits: 3 });
 let logCache = [];
+let clearedLogId = null;
+let clearedLogTime = 0;
+let visibleLogs = [];
+
+function logKey(entry) {
+    return entry.id ?? JSON.stringify([entry.time, entry.level, entry.msg]);
+}
+
+function logTimestamp(entry) {
+    return Date.parse(entry.timestamp) || 0;
+}
+
+function logTime(entry) {
+    return logTimestamp(entry) ? logTimeFormat.format(logTimestamp(entry)) : (entry.time || '');
+}
+
+function showLogStatus(message) {
+    const status = document.getElementById('log-status');
+    if (status.textContent !== message) status.textContent = message;
+    status.hidden = !message;
+}
 
 async function fetchLogsData() {
     if (currentPage !== 'logs') return;
     try {
         const data = await api.getLogs();
-        if (data.logs) renderLogs(data.logs);
-    } catch (e) {
-        const container = document.getElementById('log-entries');
-        if (container) container.textContent = 'Günlük yüklenemedi: ' + e.message;
+        const offline = data.available === false;
+        const warnings = [];
+        if (offline) warnings.push('PC hizmetine erişilemiyor. Elde bulunan kayıtlar gösteriliyor.');
+        if (data.persistent === false) warnings.push('PC hizmetinin günlük dosyasına erişilemiyor.');
+        if (data.electronPersistent === false) warnings.push('Uygulamanın günlük dosyasına erişilemiyor.');
+        showLogStatus(warnings.join(' '));
+        const entries = new Map();
+        if (offline) logCache.forEach(entry => entries.set(logKey(entry), entry));
+        data.logs.forEach(entry => entries.set(logKey(entry), entry));
+        const latest = [...entries.values()].sort((a, b) => logTimestamp(a) - logTimestamp(b)).slice(-1000);
+        if (JSON.stringify(latest) !== JSON.stringify(logCache) || document.getElementById('log-entries').children.length === 0) {
+            logCache = latest;
+            renderLogs();
+        }
+    } catch {
+        showLogStatus('Günlük alınamadı. Elde bulunan kayıtlar gösteriliyor.');
+        renderLogs();
     }
 }
 
-function renderLogs(logs) {
-    logCache = logs;
+function logDevice(entry) {
+    return entry.device_id == null && !entry.device_name ? '' : String(entry.device_id ?? entry.device_name);
+}
+
+function logDetails(entry) {
+    if (typeof entry.details === 'string') return entry.details;
+    return entry.details && Object.keys(entry.details).length ? JSON.stringify(entry.details, null, 2) : '';
+}
+
+function logTimingLines(entry) {
+    const details = entry.details;
+    if (!details || typeof details !== 'object') return [];
+    const lines = [];
+    const estimated = Date.parse(details.event_timestamp_estimated);
+    const received = Date.parse(details.received_at);
+    if (Number.isFinite(estimated)) lines.push('Tahmini olay zamanı · ' + logTimeFormat.format(estimated));
+    if (Number.isFinite(received)) lines.push('Alınma zamanı · ' + logTimeFormat.format(received));
+    if (Number.isFinite(details.outage_ms) && details.outage_ms >= 0) {
+        lines.push('Bağlantı kesintisi · ' + logDurationFormat.format(details.outage_ms / 1000) + ' sn');
+    }
+    return lines;
+}
+
+function logCauses(entry) {
+    if (Array.isArray(entry.possible_causes) && entry.possible_causes.length) {
+        return entry.possible_causes;
+    }
+    return ['WARNING', 'ERROR', 'CRITICAL'].includes(entry.level) ? ['Nedeni belirlenemedi.'] : [];
+}
+
+function isAfterLogClear(entry) {
+    if (!clearedLogTime) return true;
+    if (Number.isSafeInteger(entry.id) && clearedLogId !== null) return entry.id > clearedLogId;
+    return logTimestamp(entry) > clearedLogTime;
+}
+
+function renderLogs() {
     const container = document.getElementById('log-entries');
-    if (!container) return;
-    container.replaceChildren();
-    logs.forEach(entry => {
-        const row = document.createElement('div');
-        row.className = 'log-entry';
-        const time = document.createElement('span'); time.className = 'log-time'; time.textContent = entry.time;
-        const level = document.createElement('span'); level.className = `log-level ${entry.level}`; level.textContent = entry.level;
-        const msg = document.createElement('span'); msg.className = 'log-msg'; msg.textContent = entry.msg;
-        row.append(time, level, msg);
-        container.appendChild(row);
+    const device = document.getElementById('log-device');
+    const selectedDevice = device.value;
+    const allLogs = logCache.filter(isAfterLogClear);
+    const devices = new Map();
+    for (const entry of allLogs) {
+        const key = logDevice(entry);
+        if (key) devices.set(key, entry.device_name || key);
+    }
+    device.replaceChildren(new Option('Tüm cihazlar', ''));
+    for (const [id, name] of devices) device.add(new Option(name, id));
+    device.value = devices.has(selectedDevice) ? selectedDevice : '';
+
+    const source = document.getElementById('log-source').value;
+    const level = document.getElementById('log-level').value;
+    const search = document.getElementById('log-search').value.trim().toLocaleLowerCase('tr-TR');
+    visibleLogs = allLogs.filter(entry => {
+        if (source && source !== (entry.source || 'pc')) return false;
+        if (device.value && device.value !== logDevice(entry)) return false;
+        if (level && level !== entry.level) return false;
+        if (!search) return true;
+        return [entry.msg, entry.explanation, entry.code, entry.device_name, entry.device_id, logDetails(entry), ...logTimingLines(entry), ...logCauses(entry)]
+            .join(' ').toLocaleLowerCase('tr-TR').includes(search);
     });
-    const autoScroll = document.getElementById('log-autoscroll');
-    if (autoScroll && autoScroll.checked) container.scrollTop = container.scrollHeight;
+
+    const open = new Set([...container.querySelectorAll('details[data-log-id][open]')].map(row => row.dataset.logId));
+    const scrollTop = container.scrollTop;
+    const rows = document.createDocumentFragment();
+    for (const entry of visibleLogs) {
+        const row = document.createElement('details');
+        row.className = 'log-entry';
+        row.dataset.logId = logKey(entry);
+        row.open = open.has(row.dataset.logId);
+        const summary = document.createElement('summary');
+        const safeLevel = Object.hasOwn(LOG_LEVELS, entry.level) ? entry.level : '';
+        const sourceName = LOG_SOURCES[entry.source] || LOG_SOURCES.pc;
+        const deviceName = entry.device_name || entry.device_id;
+        const parts = {
+            'log-time': logTime(entry),
+            ['log-level ' + safeLevel]: LOG_LEVELS[safeLevel] || entry.level,
+            'log-source': deviceName ? sourceName + ' · ' + deviceName : sourceName,
+            'log-msg': entry.msg + (entry.count > 1 ? ' (×' + entry.count + ')' : '')
+        };
+        for (const [className, value] of Object.entries(parts)) {
+            const span = document.createElement('span');
+            span.className = className;
+            span.textContent = value;
+            summary.appendChild(span);
+        }
+        const detail = document.createElement('div');
+        detail.className = 'log-detail';
+        const description = document.createElement('p');
+        description.textContent = entry.explanation || entry.msg;
+        detail.appendChild(description);
+        const causes = logCauses(entry);
+        if (causes.length) {
+            const cause = document.createElement('p');
+            cause.textContent = 'Olası nedenler · ' + causes.join(' · ');
+            detail.appendChild(cause);
+        }
+        for (const line of logTimingLines(entry)) {
+            const timing = document.createElement('p');
+            timing.textContent = line;
+            detail.appendChild(timing);
+        }
+        const technical = [entry.code, logDetails(entry)].filter(Boolean).join('\n');
+        if (technical) {
+            const disclosure = document.createElement('details');
+            disclosure.dataset.logId = row.dataset.logId + ':details';
+            disclosure.open = open.has(disclosure.dataset.logId);
+            const label = document.createElement('summary');
+            label.textContent = 'Teknik ayrıntılar';
+            const raw = document.createElement('pre');
+            raw.textContent = technical;
+            disclosure.append(label, raw);
+            detail.appendChild(disclosure);
+        }
+        row.append(summary, detail);
+        rows.appendChild(row);
+    }
+    if (!visibleLogs.length) {
+        const empty = document.createElement('p');
+        empty.className = 'list-empty';
+        empty.textContent = allLogs.length ? 'Filtrelere uyan kayıt yok.' : 'Gösterilecek kayıt yok.';
+        rows.appendChild(empty);
+    }
+    container.replaceChildren(rows);
+    container.scrollTop = document.getElementById('log-autoscroll').checked && !open.size ? container.scrollHeight : scrollTop;
 }
 
 function clearLogs() {
-    logCache = [];
-    const container = document.getElementById('log-entries');
-    if (container) {
-        container.replaceChildren();
-        const note = document.createElement('div');
-        note.className = 'list-empty';
-        note.textContent = 'Görünüm temizlendi. Yeni kayıtlar gelmeye devam eder.';
-        container.appendChild(note);
+    clearedLogTime = Date.now();
+    for (const entry of logCache) {
+        if (Number.isSafeInteger(entry.id)) clearedLogId = Math.max(clearedLogId ?? 0, entry.id);
     }
+    renderLogs();
 }
 
 function downloadLogs() {
-    const lines = logCache.map(entry => `[${entry.time}] [${entry.level}] ${entry.msg}`).join('\n');
-    const blob = new Blob([lines], { type: 'text/plain' });
+    const lines = visibleLogs.map(entry => {
+        const source = LOG_SOURCES[entry.source] || LOG_SOURCES.pc;
+        const device = entry.device_name || entry.device_id;
+        return [
+            [logTime(entry), LOG_LEVELS[entry.level] || entry.level, source, device, entry.msg].filter(Boolean).join(' | '),
+            entry.count > 1 ? 'Tekrar sayısı · ' + entry.count : '',
+            entry.explanation,
+            ...logCauses(entry).map(cause => 'Olası neden · ' + cause),
+            ...logTimingLines(entry),
+            entry.code,
+            entry.details && logDetails(entry)
+        ].filter(Boolean).join('\n');
+    }).join('\n\n');
+    const url = URL.createObjectURL(new Blob([lines], { type: 'text/plain;charset=utf-8' }));
     const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
+    link.href = url;
     link.download = `luxedge_log_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.txt`;
     link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 // --- Başlangıç ---

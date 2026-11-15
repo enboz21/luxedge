@@ -6,8 +6,9 @@
 #include <DNSServer.h> // Captive Portal için gerekli kütüphane
 #include <ArduinoOTA.h>
 #include <ESP8266HTTPUpdateServer.h>
+#include <user_interface.h>
 
-#define FIRMWARE_VERSION "1.7.0"
+#define FIRMWARE_VERSION "1.7.3"
 #define UDP_PORT  7777
 #define DNS_PORT  53
 #define STATUS_BRIGHTNESS 64 // Sistem animasyonları: yaklaşık %25 güç
@@ -80,6 +81,142 @@ ESP8266HTTPUpdateServer httpUpdater; // OTA HTTP güncelleyici nesnesi
 bool isHotspotMode = false;
 bool udpRunning = false;
 bool networkServicesNeedRestart = false;
+
+enum DiagnosticCode : uint8_t {
+  DIAG_BOOT = 1, DIAG_WIFI_DISCONNECTED, DIAG_WIFI_READY, DIAG_WIFI_RETRY,
+  DIAG_HOTSPOT, DIAG_UDP_BOUND, DIAG_UDP_BIND_FAILED, DIAG_UDP_REPLY_FAILED,
+  DIAG_UDP_INVALID, DIAG_STREAM_UDP_RETRY, DIAG_STREAM_WIFI_RETRY,
+  DIAG_STREAM_RESTART, DIAG_RESTART_REQUESTED, DIAG_OTA_FAILED,
+  DIAG_WIFI_CONNECT_FAILED, DIAG_STREAM_RESUMED, DIAG_HOTSPOT_FAILED
+};
+
+struct DiagnosticEvent {
+  uint32_t uptimeMs;
+  uint32_t arg;
+  DiagnosticCode code;
+};
+
+constexpr uint32_t DIAGNOSTIC_CAPACITY = 32;
+constexpr uint32_t DIAGNOSTIC_BATCH = 8;
+constexpr unsigned long UDP_ERROR_REPORT_MS = 10000UL;
+DiagnosticEvent diagnosticEvents[DIAGNOSTIC_CAPACITY];
+uint32_t latestDiagnosticSeq = 0;
+char diagnosticBootId[17];
+uint8_t diagnosticResetReason = 255;
+WiFiEventHandler wifiDisconnectedHandler;
+WiFiEventHandler wifiGotIpHandler;
+bool stationHasIp = false;
+bool stationOutage = false;
+unsigned long stationDisconnectedAt = 0;
+uint8_t lastWifiReason = 0;
+uint32_t invalidUdpCount = 0;
+uint32_t failedUdpReplyCount = 0;
+unsigned long lastUdpErrorReport = 0;
+
+void addDiagnostic(DiagnosticCode code, uint32_t arg = 0);
+
+void addDiagnostic(DiagnosticCode code, uint32_t arg) {
+  diagnosticEvents[latestDiagnosticSeq % DIAGNOSTIC_CAPACITY] = {millis(), arg, code};
+  ++latestDiagnosticSeq;
+}
+
+void setupDiagnostics() {
+  const unsigned long bootHigh = ESP.random();
+  const unsigned long bootLow = ESP.random();
+  snprintf(diagnosticBootId, sizeof(diagnosticBootId), "%08lx%08lx", bootHigh, bootLow);
+  const auto* reset = ESP.getResetInfoPtr();
+  if (reset) diagnosticResetReason = reset->reason;
+  addDiagnostic(DIAG_BOOT, diagnosticResetReason);
+
+  wifiDisconnectedHandler = WiFi.onStationModeDisconnected(
+    [](const WiFiEventStationModeDisconnected& event) {
+      // A local disconnect also emits a leave event. Keep earlier outage evidence.
+      if (stationHasIp || (event.reason != WIFI_DISCONNECT_REASON_AUTH_LEAVE &&
+                           event.reason != WIFI_DISCONNECT_REASON_ASSOC_LEAVE)) {
+        lastWifiReason = event.reason;
+      }
+      if (stationHasIp) {
+        addDiagnostic(DIAG_WIFI_DISCONNECTED, event.reason);
+        stationDisconnectedAt = millis();
+        stationOutage = true;
+      }
+      stationHasIp = false;
+    }
+  );
+  wifiGotIpHandler = WiFi.onStationModeGotIP([](const WiFiEventStationModeGotIP&) {
+    if (!stationHasIp) {
+      addDiagnostic(DIAG_WIFI_READY, stationOutage ? millis() - stationDisconnectedAt : 0);
+    }
+    stationHasIp = true;
+    stationOutage = false;
+    lastWifiReason = 0;
+  });
+}
+
+bool beginUdpListener() {
+  udpRunning = Udp.begin(UDP_PORT) != 0;
+  addDiagnostic(udpRunning ? DIAG_UDP_BOUND : DIAG_UDP_BIND_FAILED, UDP_PORT);
+  return udpRunning;
+}
+
+void replyUdp(bool discovery, const IPAddress& localIP) {
+  if (!Udp.beginPacket(Udp.remoteIP(), Udp.remotePort())) {
+    ++failedUdpReplyCount;
+    return;
+  }
+  bool complete;
+  if (discovery) {
+    const String ip = localIP.toString();
+    size_t prefixBytes = Udp.write("AMBLIGHT_RESPONSE:");
+    size_t ipBytes = Udp.write(ip.c_str());
+    complete = prefixBytes == sizeof("AMBLIGHT_RESPONSE:") - 1 && ipBytes == ip.length();
+  } else {
+    complete = Udp.write("PONG") == 4;
+  }
+  if (!Udp.endPacket() || !complete) ++failedUdpReplyCount;
+}
+
+void reportUdpErrors() {
+  if (millis() - lastUdpErrorReport < UDP_ERROR_REPORT_MS) return;
+  lastUdpErrorReport = millis();
+  if (invalidUdpCount) addDiagnostic(DIAG_UDP_INVALID, invalidUdpCount);
+  if (failedUdpReplyCount) addDiagnostic(DIAG_UDP_REPLY_FAILED, failedUdpReplyCount);
+  invalidUdpCount = 0;
+  failedUdpReplyCount = 0;
+}
+
+void handleDiagnostics() {
+  const uint32_t latest = latestDiagnosticSeq;
+  const uint32_t oldest = latest > DIAGNOSTIC_CAPACITY ? latest - DIAGNOSTIC_CAPACITY + 1 : 1;
+  uint32_t after = 0;
+  if (server.arg("boot") == diagnosticBootId) {
+    const String cursor = server.arg("after");
+    char* end;
+    unsigned long parsed = strtoul(cursor.c_str(), &end, 10);
+    if (end != cursor.c_str() && *end == '\0' && parsed <= latest) after = parsed;
+  }
+  const uint32_t lost = after < oldest - 1 ? oldest - 1 - after : 0;
+  const uint32_t first = after + lost + 1;
+  const uint32_t last = first + DIAGNOSTIC_BATCH - 1 < latest ? first + DIAGNOSTIC_BATCH - 1 : latest;
+  // Eight records plus metadata fit even with ten-digit uint32_t fields.
+  static char response[1024];
+  size_t used = snprintf(response, sizeof(response),
+    "{\"schema\":1,\"boot_id\":\"%s\",\"uptime_ms\":%lu,\"oldest_seq\":%lu,\"latest_seq\":%lu,"
+    "\"next_seq\":%lu,\"lost\":%lu,\"reset_reason\":%u,\"events\":[",
+    diagnosticBootId, millis(), (unsigned long)oldest, (unsigned long)latest,
+    (unsigned long)last, (unsigned long)lost, (unsigned)diagnosticResetReason);
+  for (uint32_t seq = first; seq <= last; ++seq) {
+    const DiagnosticEvent& entry = diagnosticEvents[(seq - 1) % DIAGNOSTIC_CAPACITY];
+    used += snprintf(response + used, sizeof(response) - used,
+      "%s{\"seq\":%lu,\"uptime_ms\":%lu,\"code\":%u,\"arg\":%lu}",
+      seq == first ? "" : ",", (unsigned long)seq, (unsigned long)entry.uptimeMs,
+      (unsigned)entry.code, (unsigned long)entry.arg);
+  }
+  response[used++] = ']';
+  response[used++] = '}';
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "application/json", response, used);
+}
 
 // WiFi reconnect yönetimi (global, connectToWiFi() içinden sıfırlanır)
 int reconnectCount = 0;
@@ -170,8 +307,7 @@ bool restartUdpListener(const char* reason) {
     return false;
   }
 
-  if (Udp.begin(UDP_PORT)) {
-    udpRunning = true;
+  if (beginUdpListener()) {
     udpRebindCount++;
     Serial.print("UDP soketi yenilendi. Sebep: ");
     Serial.println(reason);
@@ -599,14 +735,17 @@ void startHotspot() {
   udpRunning = false;
   server.stop();
   dnsServer.stop();
+  stationHasIp = false;
+  stationOutage = false;
   WiFi.disconnect(true);
   WiFi.softAPdisconnect(true);
   delay(100);
 
   // IP çakışmasını önlemek ve sabit IP vermek için
   WiFi.mode(WIFI_AP);
-  WiFi.softAPConfig(IPAddress(192,168,4,1), IPAddress(192,168,4,1), IPAddress(255,255,255,0));
-  WiFi.softAP(ap_ssid, ap_password);
+  const bool configured = WiFi.softAPConfig(IPAddress(192,168,4,1), IPAddress(192,168,4,1), IPAddress(255,255,255,0));
+  const bool started = WiFi.softAP(ap_ssid, ap_password);
+  addDiagnostic(configured && started ? DIAG_HOTSPOT : DIAG_HOTSPOT_FAILED);
 
   IPAddress IP = WiFi.softAPIP();
   Serial.print("Hotspot IP: ");
@@ -624,8 +763,7 @@ void startHotspot() {
   server.onNotFound(handleRoot);
 
   server.begin();
-  Udp.begin(UDP_PORT);
-  udpRunning = true;
+  beginUdpListener();
   networkServicesNeedRestart = false;
 
   isHotspotMode = true;
@@ -834,6 +972,7 @@ void handleStatus() {
   status += ",\"firmware_version\":\"";
   status += FIRMWARE_VERSION;
   status += "\"";
+  status += ",\"diagnostics_version\":1";
   status += ",\"sleep_mode\":";
   status += isSleepMode ? "true" : "false";
   status += ",\"wifi_connected\":";
@@ -963,6 +1102,7 @@ void handleSegmentsPost() {
 }
 
 void handleRestart() {
+  addDiagnostic(DIAG_RESTART_REQUESTED, 1);
   server.send(200, "text/plain", "OK: Yeniden baslatiliyor...");
   delay(500);
   ESP.restart();
@@ -982,10 +1122,12 @@ void handleToggleSleep() {
 }
 
 void handleResetWifi() {
+  addDiagnostic(DIAG_RESTART_REQUESTED, 2);
   server.send(200, "text/plain", "OK: Wi-Fi ve LED ayarlari siliniyor ve reset atiliyor...");
   delay(500);
 
   // 1. Wi-Fi baglantısını kes ve kayitlilari UNUT (Flash'tan siler)
+  stationHasIp = false;
   WiFi.disconnect(true);
   delay(500);
 
@@ -1048,8 +1190,7 @@ void connectToWiFi() {
     clearAllStrips();
 
     // UDP dinlemeye başla
-    Udp.begin(UDP_PORT);
-    udpRunning = true;
+    beginUdpListener();
 
     // HTTP sunucusunu normal modda da başlat
     server.on("/", handleRoot);
@@ -1078,6 +1219,7 @@ void connectToWiFi() {
       fillAllStrips(statusColor(0, 255, 0));
     });
     ArduinoOTA.onError([](ota_error_t error) {
+      addDiagnostic(DIAG_OTA_FAILED, error);
       // Hata durumunda kırmızı
       fillAllStrips(statusColor(255, 0, 0));
     });
@@ -1090,6 +1232,7 @@ void connectToWiFi() {
   } else {
     Serial.println();
     Serial.println("WiFi bağlantısı başarısız! Hotspot moduna dönülüyor...");
+    addDiagnostic(DIAG_WIFI_CONNECT_FAILED, lastWifiReason);
     delay(2000);
     startHotspot();
   }
@@ -1102,6 +1245,8 @@ void setup() {
   bootResetReason = ESP.getResetReason();
   bootResetReason.replace("\\", "/");
   bootResetReason.replace("\"", "'");
+  setupDiagnostics();
+  server.on("/diagnostics", HTTP_GET, handleDiagnostics);
 
   Serial.println();
   Serial.println("=== LuxEdge Wemos v" FIRMWARE_VERSION " Başlatılıyor ===");
@@ -1140,6 +1285,7 @@ void setup() {
 }
 
 void loop() {
+  reportUdpErrors();
   if (isHotspotMode) {
     // DNS isteklerini işle (Captive Portal için kritik)
     dnsServer.processNextRequest();
@@ -1159,12 +1305,10 @@ void loop() {
       if (read > 0) {
         packet[read] = 0;
         if (strstr(packet, "AMBLIGHT_DISCOVERY") != NULL) {
-          IPAddress remoteIP = Udp.remoteIP();
-          Udp.beginPacket(remoteIP, Udp.remotePort());
-          Udp.write("AMBLIGHT_RESPONSE:");
-          Udp.write(WiFi.softAPIP().toString().c_str());
-          Udp.endPacket();
+          replyUdp(true, WiFi.softAPIP());
         }
+      } else {
+        ++invalidUdpCount;
       }
     }
   } else {
@@ -1177,11 +1321,13 @@ void loop() {
       if (now - lastReconnectAttempt > 10000) {
         lastReconnectAttempt = now;
         reconnectCount++;
+        addDiagnostic(DIAG_WIFI_RETRY, reconnectCount);
         Serial.print("Wi-Fi baglantisi kesildi! Yeniden baglaniyor... (deneme ");
         Serial.print(reconnectCount);
         Serial.println("/12)");
         server.stop();
         networkServicesNeedRestart = true;
+        stationHasIp = false;
         WiFi.disconnect();
         delay(100);
         WiFi.begin(saved_ssid.c_str(), saved_password.c_str());
@@ -1191,6 +1337,7 @@ void loop() {
       }
       if (reconnectCount >= 12) {
         Serial.println("12 deneme basarisiz. Hotspot moduna geciliyor...");
+        addDiagnostic(DIAG_WIFI_CONNECT_FAILED, lastWifiReason);
         reconnectCount = 0;
         startHotspot();
         return;
@@ -1199,8 +1346,7 @@ void loop() {
       reconnectCount = 0;
       // Bağlantı varsa ve Udp henüz çalışmıyorsa başlat
       if (!udpRunning) {
-        if (Udp.begin(UDP_PORT)) {
-          udpRunning = true;
+        if (beginUdpListener()) {
           Serial.println("UDP soketi başlatıldı (Port 7777)");
         } else {
           Serial.println("Udp.begin() basarisiz! Hotspot moduna geciliyor...");
@@ -1239,10 +1385,7 @@ void loop() {
           IPAddress remoteIP = Udp.remoteIP();
           int remotePort = Udp.remotePort();
 
-          Udp.beginPacket(remoteIP, remotePort);
-          Udp.write("AMBLIGHT_RESPONSE:");
-          Udp.write(WiFi.localIP().toString().c_str());
-          Udp.endPacket();
+          replyUdp(true, WiFi.localIP());
 
           Serial.print("Discovery isteği geldi: ");
           Serial.print(remoteIP);
@@ -1251,9 +1394,7 @@ void loop() {
         }
         // 2. PING Kontrolü - Öncelikli işleme
         else if (strcmp(packetBuffer, "PING") == 0) {
-          Udp.beginPacket(Udp.remoteIP(), Udp.remotePort());
-          Udp.write("PONG");
-          Udp.endPacket();
+          replyUdp(false, WiFi.localIP());
           Serial.println("PING yanıtlandı");
         }
         // 3. LED Verisi - Yalnız STREAM modundaki seritlere sirayla dagitilir
@@ -1284,11 +1425,13 @@ void loop() {
           lastDataTime = millis();
           receivingData = true;
           hasReceivedLedData = true;
+          if (dataRecoveryStage) addDiagnostic(DIAG_STREAM_RESUMED, dataRecoveryStage);
           dataRecoveryStage = 0;
-        } else {
-          Serial.print("Tanınmayan paket, len:");
-          Serial.println(len);
+        } else if (!isSleepMode) {
+          ++invalidUdpCount;
         }
+      } else {
+        ++invalidUdpCount;
       }
     }
 
@@ -1312,14 +1455,17 @@ void loop() {
 
       if (dataAge >= RESTART_RECOVERY_DELAY_MS && dataRecoveryStage == 2) {
         Serial.println("LED verisi 60 saniyedir yok. Wemos bir kez yeniden baslatiliyor...");
+        addDiagnostic(DIAG_STREAM_RESTART, dataAge);
         delay(100);
         ESP.restart();
       } else if (dataAge >= WIFI_RECOVERY_DELAY_MS && dataRecoveryStage == 1) {
         Serial.println("LED verisi 20 saniyedir yok. Wi-Fi baglantisi yenileniyor...");
+        addDiagnostic(DIAG_STREAM_WIFI_RETRY, dataAge);
         Udp.stop();
         udpRunning = false;
         server.stop();
         networkServicesNeedRestart = true;
+        stationHasIp = false;
         WiFi.disconnect();
         delay(100);
         WiFi.begin(saved_ssid.c_str(), saved_password.c_str());
@@ -1327,6 +1473,7 @@ void loop() {
         lastReconnectAttempt = millis();
         dataRecoveryStage = 2;
       } else if (dataAge >= UDP_RECOVERY_DELAY_MS && dataRecoveryStage == 0) {
+        addDiagnostic(DIAG_STREAM_UDP_RETRY, dataAge);
         restartUdpListener("5 saniyedir LED verisi yok");
         dataRecoveryStage = 1;
       }

@@ -384,20 +384,31 @@ input[type="range"] { width: 100%; height: 20px; accent-color: var(--accent); cu
 
 /* Logs */
 .log-card { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.log-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.log-filters .input { width: auto; max-width: 100%; }
+.log-filters select { max-width: min(230px, 100%); text-overflow: ellipsis; }
+.log-filters input { flex: 1; min-width: 140px; user-select: text; }
+#log-status { margin-bottom: 8px; }
 .log-entries {
     flex: 1; min-height: 0; overflow-y: auto;
     font-family: var(--mono); font-size: 11.5px; line-height: 1.6;
     background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius-sm);
     padding: 8px 10px; user-select: text;
 }
-.log-entry { display: flex; gap: 10px; padding: 1px 0; }
-.log-time { color: var(--text-3); flex-shrink: 0; }
-.log-level { width: 56px; flex-shrink: 0; font-weight: 600; }
+.log-entry { padding: 5px 0; border-bottom: 1px solid var(--border); }
+.log-entry:last-child { border-bottom: 0; }
+.log-entry summary { cursor: pointer; }
+.log-time, .log-level, .log-source { margin-right: 10px; }
+.log-time, .log-source { color: var(--text-3); }
+.log-level { font-weight: 600; }
 .log-level.INFO { color: var(--accent); }
 .log-level.WARNING { color: var(--warn); }
 .log-level.ERROR { color: var(--bad); }
+.log-level.CRITICAL { color: var(--bad); }
 .log-level.DEBUG { color: var(--text-3); }
-.log-msg { color: var(--text-2); word-break: break-all; }
+.log-msg { color: var(--text-2); overflow-wrap: anywhere; }
+.log-detail { padding: 4px 12px 4px 17px; overflow-wrap: anywhere; }
+.log-detail pre { white-space: pre-wrap; }
 
 /* Toasts */
 #toast-container { position: fixed; bottom: 18px; right: 18px; z-index: 9999; display: flex; flex-direction: column; gap: 8px; }
