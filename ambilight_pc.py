@@ -9,19 +9,26 @@ import sys
 import io
 import copy
 import ipaddress
+import hmac
 import uuid
 import logging
-from diagnostic_logs import DiagnosticLogHandler, HISTORY_LIMIT
+from datetime import datetime, timezone
+from diagnostic_logs import DiagnosticLogHandler, HISTORY_LIMIT, STREAM_THREAD
 from wemos_diagnostics import WemosDiagnostics
-from frame_processing import FrameCapture, edge_colors, edge_rgb, pack_rgb, solid_frame, frame_delay
+from windows_audit_session import WindowsAuditSession
+from windows_wfp import TCP, UDP, WfpDiagnostics, transport_error
+from stream_diagnostics import StreamDiagnostics
+from frame_processing import FrameCapture, FrameTimings, edge_colors, edge_rgb, pack_rgb, solid_frame, frame_delay
 from monitor_catalog import MonitorCatalog
-from connectivity import Connectivity, legacy_connection
+from connectivity import Connectivity, describe_probe, legacy_connection, next_probe_at, probe_error, probe_result
 
 monitor_catalog = MonitorCatalog()
-APP_VERSION = "1.7.3"
+APP_VERSION = "1.7.4"
 BACKEND_PORT = int(os.environ.get('LUXEDGE_BACKEND_PORT', '8888'))
 # Electron portu kendisi seçip ortam değişkeniyle verir; o zaman başka porta kaymak yasak.
 BACKEND_PORT_STRICT = 'LUXEDGE_BACKEND_PORT' in os.environ
+WINDOWS_DIAGNOSTICS_TOKEN = os.environ.pop('LUXEDGE_WINDOWS_DIAGNOSTICS_TOKEN', '').encode('utf-8')
+LIVE_LOG_TOKEN = os.environ.pop('LUXEDGE_LIVE_LOG_TOKEN', '').encode('utf-8')
 
 # Windows konsolunda emoji/Unicode desteği için encoding'i UTF-8'e ayarla.
 # PyInstaller --noconsole çalıştırmalarında stdout/stderr None olabilir.
@@ -60,6 +67,8 @@ def setup_logger():
 
 log = setup_logger()
 log_history = next(handler for handler in log.handlers if isinstance(handler, DiagnosticLogHandler))
+windows_audit_session = WindowsAuditSession(log)
+wfp_diagnostics = WfpDiagnostics(log, audit_session=windows_audit_session)
 
 # Windows'ta subprocess çağrılarında CMD penceresi açılmasını engelle
 CREATE_NO_WINDOW = 0x08000000
@@ -1418,9 +1427,17 @@ connectivity = Connectivity()
 
 def set_connection_target(ip, port, active=True, force=False):
     with status_lock:
+        previous = connectivity.snapshot()
         connectivity.reset(ip, port, active=active, force=force)
         app_status['wemos_ip'] = ip
         app_status['wemos_port'] = int(port)
+    if (previous['ip'], previous['port']) != (ip or '', int(port)):
+        log.info('[BAĞLANTI] Hedef değişti: %s:%s → %s:%s',
+                 previous['ip'] or 'ayarsız', previous['port'], ip or 'ayarsız', port, extra={
+                     'code': 'connectivity_target_changed', 'source': 'pc',
+                     'details': {'previous_ip': previous['ip'], 'previous_port': previous['port'],
+                                 'ip': ip or '', 'port': int(port)},
+                 })
 
 def update_status(key, value):
     """Thread-safe durum güncelleme"""
@@ -1458,16 +1475,30 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
         """HTTP loglarını sustur (konsolu temiz tut)"""
         pass
     
-    def _safe_send_json(self, data):
+    def _safe_send_json(self, data, *, allow_origin=True):
         """JSON yanıtını güvenli şekilde gönder (BrokenPipeError koruması)"""
         try:
             self.send_response(200)
             self.send_header('Content-Type', 'application/json; charset=utf-8')
-            self.send_header('Access-Control-Allow-Origin', '*')
+            if allow_origin:
+                self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
             self.wfile.write(json.dumps(data, ensure_ascii=False).encode('utf-8'))
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass  # İstemci bağlantıyı kapattı, sorun değil
+
+    def handle_windows_diagnostics(self, operation):
+        supplied = self.headers.get('X-LuxEdge-Windows-Diagnostics-Token', '').encode('utf-8')
+        if not WINDOWS_DIAGNOSTICS_TOKEN or not hmac.compare_digest(WINDOWS_DIAGNOSTICS_TOKEN, supplied):
+            self.send_error(403)
+            return
+        if operation == 'start':
+            result = windows_audit_session.start()
+        elif operation == 'stop':
+            result = windows_audit_session.stop()
+        else:
+            result = windows_audit_session.status()
+        self._safe_send_json(result)
     
     def do_GET(self):
         try:
@@ -1475,6 +1506,8 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
                 self.serve_html()
             elif self.path == '/api/status':
                 self.serve_status()
+            elif self.path == '/api/windows-diagnostics':
+                self.handle_windows_diagnostics('status')
             elif self.path == '/api/devices':
                 self.handle_devices_list()
             elif self.path == '/api/devices/scan':
@@ -1487,6 +1520,8 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
                 self.serve_scan()
             elif self.path.split('?', 1)[0] == '/api/logs':
                 self.serve_logs()
+            elif self.path.split('?', 1)[0] == '/api/live-log-rows':
+                self.serve_live_log_rows()
             elif self.path.startswith('/api/test-wemos-connection'):
                 self.handle_test_wemos_connection()
             elif self.path.startswith('/api/wemos/status'):
@@ -1500,6 +1535,10 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
         try:
             if self.path == '/api/config':
                 self.handle_config_update()
+            elif self.path == '/api/windows-diagnostics/start':
+                self.handle_windows_diagnostics('start')
+            elif self.path == '/api/windows-diagnostics/stop':
+                self.handle_windows_diagnostics('stop')
             elif self.path == '/api/monitors/refresh':
                 self._safe_send_json(monitor_catalog.refresh(get_available_monitors))
             elif self.path == '/api/devices/mode':
@@ -1648,6 +1687,21 @@ class WebUIHandler(http.server.BaseHTTPRequestHandler):
         except ValueError:
             limit, after = HISTORY_LIMIT, None
         self._safe_send_json(log_history.snapshot(after, limit))
+
+    def serve_live_log_rows(self):
+        supplied = self.headers.get('X-LuxEdge-Live-Log-Token', '').encode('utf-8')
+        if not LIVE_LOG_TOKEN or not hmac.compare_digest(LIVE_LOG_TOKEN, supplied):
+            self.send_error(403)
+            return
+        try:
+            params = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query, max_num_fields=3)
+            since, through, after = (int(params[key][0]) for key in ('since', 'through', 'after'))
+            if not 0 <= after < 2**53 or not 0 < since <= through < 2**53:
+                raise ValueError
+        except (ValueError, KeyError):
+            self.send_error(400)
+            return
+        self._safe_send_json(log_history.export_snapshot(since, through, after), allow_origin=False)
 
     def handle_devices_list(self):
         """Pasif çoklu-cihaz kayıtlarını döndür; tekli config'i değiştirme."""
@@ -2092,47 +2146,68 @@ def show_console():
 # AMBILIGHT WORKER
 # ============================================================
 
-def ping_wemos(ip, port=7777, timeout=3):
+def socket_local_address(sock):
+    try:
+        return sock.getsockname()
+    except OSError:
+        return None
+
+
+def ping_wemos(ip, port=7777, timeout=3, observation=None):
     """
     Wemos'a UDP üzerinden PING göndererek bağlantı durumunu kontrol eder.
     Wemos firmware'ında PING mesajına PONG ile yanıt veren handler var.
     Bu yöntem HTTP/TCP/ICMP'ye bağımlı değildir - doğrudan Wemos ile konuşur.
     """
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.settimeout(timeout)
-        # Wemos'a PING gönder (wemos_code.ino satır 397-400)
-        sock.sendto(b"PING", (ip, int(port)))
-        # PONG yanıtını bekle
-        data, addr = sock.recvfrom(64)
-        sock.close()
-        return data == b"PONG" and addr == (ip, int(port))
-    except Exception:
-        try:
-            sock.close()
-        except Exception:
-            pass
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.settimeout(timeout)
+            started = time.time()
+            directions = ('outbound',)
+            try:
+                sock.sendto(b"PING", (ip, int(port)))
+                directions = ('outbound', 'inbound')
+                data, addr = sock.recvfrom(64)
+            except OSError:
+                wfp_diagnostics.submit('UDP PING/PONG', ip, int(port), UDP, started,
+                                       directions=directions, local=socket_local_address(sock))
+                raise
+            valid = data == b"PONG" and addr == (ip, int(port))
+            if observation is not None and not valid:
+                observation['failure_reason'] = 'unexpected_pong'
+            return valid
+    except Exception as error:
+        if observation is not None:
+            observation.update(probe_error(error))
         return False
 
-def check_wemos_http(ip, timeout=2):
+def check_wemos_http(ip, timeout=2, observation=None):
     """
     Wemos'un /status HTTP endpoint'ine GET isteği göndererek
     erişilebilirliğini kontrol eder. UDP engellendiğinde veya Wemos
     HTTP server'ı çalışıyorsa (port 80) yardımcı olur.
     """
+    started = time.time()
     try:
         import urllib.request
         import json
         url = f"http://{ip}/status"
         req = urllib.request.Request(url, method='GET')
         with urllib.request.urlopen(req, timeout=timeout) as response:
+            if observation is not None:
+                observation['http_status'] = response.status
             if response.status == 200:
                 data = json.loads(response.read().decode('utf-8'))
                 # Wemos /status endpoint'inden temel alan doğrulama
                 if isinstance(data, dict) and 'ip' in data:
                     return True
-    except Exception:
-        pass
+                if observation is not None:
+                    observation['failure_reason'] = 'invalid_status'
+    except Exception as error:
+        if transport_error(error):
+            wfp_diagnostics.submit('HTTP /status', ip, 80, TCP, started)
+        if observation is not None:
+            observation.update(probe_error(error))
     return False
 
 
@@ -2297,10 +2372,20 @@ def cached_device_validation(device, now=None):
         _validation_cache[device_id] = {"signature": signature, "result": result, "checked_at": now}
     return result
 
-def probe_wemos(ip, port=7777, full=False):
+def probe_wemos(ip, port=7777, full=False, observations=None):
     """None means HTTP was not tested, not that it failed."""
-    udp_ok = ping_wemos(ip, port=port, timeout=1.0)
-    http_ok = check_wemos_http(ip, timeout=1.5) if full or not udp_ok else None
+    udp = probe_result('UDP PING/PONG', ip, int(port), 1.0)
+    http = probe_result('HTTP /status', ip, 80, 1.5, 'UDP yanıt verdi')
+    started = time.perf_counter()
+    udp_ok = ping_wemos(ip, port=port, timeout=1.0, observation=udp)
+    udp.update(tested=True, ok=udp_ok, elapsed_ms=round((time.perf_counter() - started) * 1000, 1))
+    http_ok = None
+    if full or not udp_ok:
+        started = time.perf_counter()
+        http_ok = check_wemos_http(ip, timeout=1.5, observation=http)
+        http.update(tested=True, ok=http_ok, skip_reason=None, elapsed_ms=round((time.perf_counter() - started) * 1000, 1))
+    if observations is not None:
+        observations.extend((udp, http))
     return udp_ok, http_ok
 
 
@@ -2311,7 +2396,12 @@ def test_wemos_connection(ip, port=7777):
     - HTTP /status endpoint kontrolü (port 80)
     Returns tuple (udp_ok, http_ok, message)
     """
-    udp_ok, http_ok = probe_wemos(ip, port, full=True)
+    observations = []
+    udp_ok, http_ok = probe_wemos(ip, port, True, observations)
+    log.info('[BAĞLANTI] Elle yoklama %s | %s', ip, ' | '.join(map(describe_probe, observations)), extra={
+        'code': 'connectivity_manual_probe', 'source': 'pc',
+        'details': {'ip': ip, 'port': int(port), 'probes': observations, 'next_try_at': None},
+    })
 
     if udp_ok and http_ok:
         return True, True, f"Her iki protokol de çalışıyor ({ip}:{port}, http://{ip}/status)"
@@ -2325,24 +2415,85 @@ def test_wemos_connection(ip, port=7777):
 def wemos_connectivity_checker(ip, port, cancel_event=None):
     """Probe the current target; canceled/obsolete results cannot publish."""
     cancel = cancel_event or threading.Event()
+    interval = 3
     while running and not cancel.is_set():
         token = connectivity.begin(ip, port)
         if token is None:
             return
         previous = connectivity.snapshot()['state']
+        observations = []
         try:
-            udp_ok, http_ok = probe_wemos(ip, port)
+            udp_ok, http_ok = probe_wemos(ip, port, False, observations)
         except Exception as error:
             log.warning(f'[BAĞLANTI] Kontrol hatası ({ip}:{port}): {error}')
             udp_ok, http_ok = False, False
         if not running or cancel.is_set():
             return
-        if connectivity.complete(token, udp_ok, http_ok):
-            current = connectivity.snapshot()['state']
-            if current != previous:
-                log.info(f'[BAĞLANTI] {ip}:{port}: {previous} -> {current}')
-        if cancel.wait(3):
+        snapshot = connectivity.complete(token, udp_ok, http_ok, with_snapshot=True)
+        next_try = time.monotonic() + interval
+        if snapshot is not None:
+            current = snapshot['state']
+            if observations:
+                observations[0]['consecutive_failures'] = snapshot['udp_consecutive_failures']
+                observations[1]['consecutive_failures'] = snapshot['http_consecutive_failures']
+            failures = snapshot['consecutive_failures']
+            log.info('[BAĞLANTI] %s | %s | %s -> %s, ardışık hata: %s, sonraki yoklama: %s sn',
+                     ip, ' | '.join(map(describe_probe, observations)), previous, current, failures, interval, extra={
+                         'code': 'connectivity_probe', 'source': 'pc',
+                         'details': {'ip': ip, 'port': int(port), 'probes': observations, 'previous_state': previous,
+                                     'state': current, 'consecutive_failures': failures,
+                                     'backoff_ms': 0, 'next_try_in_ms': interval * 1000,
+                                     'next_try_at': next_probe_at(interval)},
+                     })
+        if cancel.wait(max(0, next_try - time.monotonic())):
             return
+
+
+def frame_error_details(error, timing):
+    details = {
+        'error_timestamp': datetime.now(timezone.utc).isoformat(timespec='milliseconds'),
+        'error_type': type(error).__name__,
+        'stage': timing.failed_stage,
+        'timings_ms': {stage: round(ns / 1_000_000, 3) for stage, ns in timing.durations_ns().items()},
+    }
+    if timing.failed_stage_ns is not None:
+        details['stage_ms'] = round(timing.failed_stage_ns / 1_000_000, 3)
+    if timing.target is not None:
+        details['device_id'], details['ip'], details['port'] = timing.target
+    if timing.failed_monitor is not None:
+        details['monitor'] = {key: timing.failed_monitor.get(key) for key in ('left', 'top', 'width', 'height')}
+    winerror = getattr(error, 'winerror', None)
+    mss_details = getattr(error, 'details', None)
+    if isinstance(mss_details, dict):
+        if winerror is None:
+            winerror = mss_details.get('error_code')
+        if isinstance(mss_details.get('func'), str):
+            details['windows_function'] = mss_details['func'][:80]
+    if winerror is None:
+        winerror = getattr(error.__cause__, 'winerror', None)
+    if type(winerror) is int:
+        details['winerror'] = winerror
+    errno = getattr(error, 'errno', None)
+    if type(errno) is int:
+        details['errno'] = errno
+    return details
+
+
+def frame_error_context(details):
+    stage_name = {
+        'capture': 'ekran yakalama',
+        'color': 'LED rengi hesaplama',
+        'udp_send': 'UDP gönderimi',
+        'frame': 'kare işleme',
+    }[details['stage']]
+    fields = [f'aşama: {stage_name}']
+    if 'stage_ms' in details:
+        fields.append(f"süre: {details['stage_ms']:.3f} ms")
+    if details.get('ip'):
+        fields.append(f"hedef: {details['ip']}:{details['port']}")
+    if 'winerror' in details:
+        fields.append(f"WinError: {details['winerror']}")
+    return ', '.join(fields)
 
 
 def ambilight_worker(config):
@@ -2397,15 +2548,39 @@ def ambilight_worker(config):
     packets_sent = 0
     errors = 0
     frame_errors_since_log = 0
+    suppressed_frame_error = None
+    reported_frame_errors = set()
     next_frame_error_log = 0
     low_fps_since_log = 0
     next_low_fps_log = 0
+    timing_totals = {}
+    timing_peaks = {}
+    timing_frame_count = 0
+    next_timing_log = 0
+    stream_diagnostics = StreamDiagnostics(log)
+
+    def send_stream_frame(timing, payload):
+        target = timing.target
+        stream_diagnostics.attempt(target)
+        try:
+            byte_count = timing.send(sock, payload, target[1:])
+        except Exception as error:
+            if isinstance(error, OSError):
+                finished = time.time()
+                elapsed_ns = timing.failed_stage_ns or 0
+                wfp_diagnostics.submit('UDP LED', target[1], target[2], UDP, finished - elapsed_ns / 1e9,
+                                       finished, directions=('outbound',), local=socket_local_address(sock))
+            stream_diagnostics.failed(target, error)
+            raise
+        stream_diagnostics.accepted(target, byte_count)
 
     def log_frame_error_summary():
-        log.warning("[WORKER] Ek kare işleme hataları: %s", frame_errors_since_log, extra={
+        log.warning("[WORKER] Ek kare işleme hataları: %s (son hata: %s)",
+                    frame_errors_since_log, frame_error_context(suppressed_frame_error), extra={
             "code": "frame_failed",
             "explanation": "Son uyarıdan sonra ekran karesi yakalama, işleme veya gönderme hataları tekrarlandı.",
             "possible_causes": ["Nedeni belirlenemedi"],
+            "details": suppressed_frame_error,
             "count": frame_errors_since_log,
         })
 
@@ -2461,6 +2636,9 @@ def ambilight_worker(config):
         update_status("led_monitor_index", led_idx)
         mon_name = sct.monitors[led_idx].get('name', f'Monitör {led_idx}') if (hasattr(sct, 'monitors') and led_idx < len(sct.monitors)) else 'Bilinmeyen'
         log.info(f"[MONITOR] Ambilight için kullanılacak monitör: {led_idx} ({mon_name})")
+        legacy_target = ('legacy-primary', WEMOS_IP, WEMOS_PORT)
+        stream_diagnostics.configure([legacy_target] if WEMOS_IP else [], FPS)
+        stream_diagnostics.thread.start()
 
         while running:
             if monitor_catalog.version != monitor_version:
@@ -2548,7 +2726,7 @@ def ambilight_worker(config):
                         update_status("idle_brightness", IDLE_BRIGHTNESS)
                         update_status("fullscreen_max_brightness", FULLSCREEN_MAX_BRIGHTNESS)
                         update_status("fps", FPS)
-                        print("✓ (Worker) LED / Kenar / Bekleme Modu Konfigürasyonları Canlı Olarak Güncellendi.")
+                        log.info('[CONFIG] LED, kenar ve bekleme modu ayarları güncellendi.')
                     
                     new_mon_idx = os.environ.get("LED_MONITOR_INDEX") or new_config.get("led_monitor_index", get_primary_monitor_index(sct))
                     if new_mon_idx is not None and int(new_mon_idx) != led_idx:
@@ -2594,6 +2772,12 @@ def ambilight_worker(config):
                                 log.warning(f"[MULTI] {multi_device['id']} devre dışı: {validation['message']}")
                     update_status("multi_device_enabled", multi_device_mode)
                     update_status("active_multi_devices", [device["id"] for device in active_multi_devices])
+                    legacy_target = ('legacy-primary', WEMOS_IP, WEMOS_PORT)
+                    if multi_device_mode:
+                        targets = [(device['id'], device['ip'], device['port']) for device in active_multi_devices]
+                    else:
+                        targets = [legacy_target] if WEMOS_IP else []
+                    stream_diagnostics.configure(targets, FPS)
 
             # IP ayarlanmamışsa bekle
             if not WEMOS_IP and not multi_device_mode:
@@ -2602,49 +2786,56 @@ def ambilight_worker(config):
 
             # v1.6.1: Adaptive sleep - frame işlem süresini hesaba kat
             frame_start = time.perf_counter()
+            frame_capture.begin_frame()
+            timing = FrameTimings(frame_capture)
+            if not multi_device_mode:
+                timing.target = legacy_target
 
             try:
                 data = bytearray()
 
-                frame_capture.begin_frame()
                 monitor = sct.monitors[led_idx] if 0 < led_idx < len(sct.monitors) else None
                 is_full = is_fullscreen(monitor) if IDLE_MODE or FULLSCREEN_MAX_BRIGHTNESS < 255 else False
 
                 if IDLE_MODE and not is_full:
-                    if IDLE_USE_WINDOWS_COLOR:
-                        current_color = get_windows_accent_color()
-                    else:
-                        current_color = IDLE_COLOR
+                    with timing.color():
+                        if IDLE_USE_WINDOWS_COLOR:
+                            current_color = get_windows_accent_color()
+                        else:
+                            current_color = IDLE_COLOR
 
-                    ir, ig, ib = hex_to_rgb(current_color)
-                    b_ratio = IDLE_BRIGHTNESS / 100.0
-                    r = int(ir * b_ratio)
-                    g = int(ig * b_ratio)
-                    b = int(ib * b_ratio)
-                    data = solid_frame(r, g, b, TOTAL_LEDS)
+                        ir, ig, ib = hex_to_rgb(current_color)
+                        b_ratio = IDLE_BRIGHTNESS / 100.0
+                        r = int(ir * b_ratio)
+                        g = int(ig * b_ratio)
+                        b = int(ib * b_ratio)
+                        data = solid_frame(r, g, b, TOTAL_LEDS)
                 elif not multi_device_mode:
                     brightness = FULLSCREEN_MAX_BRIGHTNESS if is_full else 255
-                    data = grab_edge_frame(TOP_LEDS, BOTTOM_LEDS, LEFT_LEDS, RIGHT_LEDS,
-                                           EDGE_WIDTH, EDGE_OFFSET, frame_capture, led_idx, brightness)
+                    with timing.color():
+                        data = grab_edge_frame(TOP_LEDS, BOTTOM_LEDS, LEFT_LEDS, RIGHT_LEDS,
+                                               EDGE_WIDTH, EDGE_OFFSET, frame_capture, led_idx, brightness)
 
                 if multi_device_mode:
                     multi_brightness = FULLSCREEN_MAX_BRIGHTNESS if is_full else 255
                     for multi_device in active_multi_devices:
-                        if IDLE_MODE and not is_full:
-                            multi_data = solid_frame(r, g, b, expected_stream_led_count(multi_device))
-                        else:
-                            multi_data = build_device_frame(multi_device, EDGE_WIDTH, EDGE_OFFSET,
-                                                            frame_capture, brightness=multi_brightness)
+                        timing.target = multi_device['id'], multi_device['ip'], multi_device['port']
+                        with timing.color():
+                            if IDLE_MODE and not is_full:
+                                multi_data = solid_frame(r, g, b, expected_stream_led_count(multi_device))
+                            else:
+                                multi_data = build_device_frame(multi_device, EDGE_WIDTH, EDGE_OFFSET,
+                                                                frame_capture, brightness=multi_brightness)
                         if not multi_data:
                             continue
-                        sock.sendto(multi_data, (multi_device["ip"], multi_device["port"]))
+                        send_stream_frame(timing, multi_data)
                         device_overview.record_frame(multi_device['id'], multi_device['ip'],
                                                      multi_device['port'], multi_data,
                                                      'solid' if IDLE_MODE and not is_full else 'stream',
                                                      strips=stream_strips(multi_device))
                         packets_sent += 1
                 else:
-                    sock.sendto(data, (WEMOS_IP, WEMOS_PORT))
+                    send_stream_frame(timing, data)
                     device_overview.record_frame('legacy-primary', WEMOS_IP, WEMOS_PORT, data,
                                                  'solid' if IDLE_MODE and not is_full else 'stream')
                     packets_sent += 1
@@ -2652,6 +2843,30 @@ def ambilight_worker(config):
 
                 # Her 2 saniyede bir FPS ve paket sayısını güncelle
                 current_time = time.perf_counter()
+                if timing.udp_send_ns:
+                    timing_frame_count += 1
+                    for stage, duration in timing.durations_ns().items():
+                        timing_totals[stage] = timing_totals.get(stage, 0) + duration
+                        timing_peaks[stage] = max(timing_peaks.get(stage, 0), duration)
+                    if current_time >= next_timing_log:
+                        average_ms = {stage: round(ns / timing_frame_count / 1_000_000, 3)
+                                      for stage, ns in timing_totals.items()}
+                        log.info('[WORKER] Ortalama kare süreleri (%s kare): ekran yakalama %.3f ms, '
+                                 'LED rengi hesaplama %.3f ms, UDP gönderimi %.3f ms',
+                                 timing_frame_count, average_ms['capture'], average_ms['color'],
+                                 average_ms['udp_send'], extra={
+                            'code': 'frame_timings',
+                            'explanation': 'Başarılı karelerde ekran yakalama, LED rengi hesaplama ve UDP gönderme süreleri.',
+                            'details': {
+                                'frame_count': timing_frame_count,
+                                'average_ms': average_ms,
+                                'max_ms': {stage: round(ns / 1_000_000, 3) for stage, ns in timing_peaks.items()},
+                            },
+                        })
+                        timing_frame_count = 0
+                        timing_totals.clear()
+                        timing_peaks.clear()
+                        next_timing_log = current_time + 30
                 if frame_errors_since_log and current_time >= next_frame_error_log:
                     log_frame_error_summary()
                     frame_errors_since_log = 0
@@ -2683,21 +2898,30 @@ def ambilight_worker(config):
                 time.sleep(frame_delay(frame_start, time.perf_counter(), sleep_time))
 
             except Exception as e:
+                details = frame_error_details(e, timing)
                 errors += 1
-                frame_errors_since_log += 1
                 update_status("errors", errors)
                 update_status("last_error", str(e))
                 now = time.perf_counter()
                 if now >= next_frame_error_log:
-                    log.error("[WORKER] Frame hatası: %s", e, extra={
+                    if frame_errors_since_log:
+                        log_frame_error_summary()
+                        frame_errors_since_log = 0
+                    reported_frame_errors.clear()
+                    next_frame_error_log = now + 10
+                signature = (details['stage'], timing.target, details['error_type'], details.get('winerror'))
+                if signature not in reported_frame_errors and len(reported_frame_errors) < 8:
+                    reported_frame_errors.add(signature)
+                    log.error("[WORKER] Frame hatası (%s): %s",
+                              frame_error_context(details), e, extra={
                         "code": "frame_failed",
                         "explanation": "Ekran karesi yakalanırken, işlenirken veya gönderilirken hata oluştu.",
                         "possible_causes": ["Nedeni belirlenemedi"],
-                        "details": {"error_type": type(e).__name__},
-                        "count": frame_errors_since_log,
+                        "details": details,
                     })
-                    frame_errors_since_log = 0
-                    next_frame_error_log = now + 10
+                else:
+                    frame_errors_since_log += 1
+                    suppressed_frame_error = details
                 if running:
                     time.sleep(1)  # Hata durumunda biraz bekle
                 else:
@@ -2712,6 +2936,7 @@ def ambilight_worker(config):
         update_status("connection", "bağlantı hatası")
         update_status("last_error", str(e))
     finally:
+        stream_diagnostics.stop()
         if frame_errors_since_log:
             log_frame_error_summary()
         if low_fps_since_log:
@@ -2848,11 +3073,14 @@ def main():
     
     # Ambilight thread'ini başlat
     running = True
-    ambilight_thread = threading.Thread(target=ambilight_worker, args=(config,), daemon=False)
+    log_history.start_stream_writer()
+    wfp_diagnostics.start()
+    ambilight_thread = threading.Thread(target=ambilight_worker, args=(config,), name=STREAM_THREAD, daemon=False)
     ambilight_thread.start()
     
     diagnostic_stop = threading.Event()
-    diagnostics = WemosDiagnostics(log, log_history.snapshot()['logs'], diagnostic_devices)
+    diagnostics = WemosDiagnostics(log, log_history.snapshot()['logs'], diagnostic_devices,
+                                   wfp_submit=wfp_diagnostics.submit)
     diagnostic_thread = threading.Thread(target=diagnostics.run, args=(diagnostic_stop,),
                                          name='wemos-diagnostics', daemon=True)
     diagnostic_thread.start()
@@ -2869,9 +3097,13 @@ def main():
         else:
             _run_console_mode(config, TOTAL_LEDS, WEMOS_IP, WEMOS_PORT, FPS)
     finally:
-        diagnostic_stop.set()
-        diagnostic_thread.join(timeout=2)
         running = False
+        diagnostic_stop.set()
+        windows_audit_session.close()
+        diagnostic_thread.join(timeout=2)
+        ambilight_thread.join()
+        wfp_diagnostics.stop()
+        log_history.stop_stream_writer()
 
 
 def _run_console_mode(config, total_leds, wemos_ip, wemos_port, fps):

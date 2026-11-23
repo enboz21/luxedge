@@ -1,5 +1,7 @@
 """Pure frame processing helpers; no desktop, network or config access."""
+from contextlib import contextmanager
 from functools import lru_cache
+from time import perf_counter_ns
 
 import numpy as np
 
@@ -10,15 +12,69 @@ class FrameCapture:
         self.capture = capture
         self.monitors = capture.monitors
         self.frames = {}
+        self.capture_ns = 0
+        self.failed_grab = None
 
     def begin_frame(self):
         self.frames.clear()
+        self.capture_ns = 0
+        self.failed_grab = None
 
     def grab(self, monitor):
         key = tuple(monitor.get(k) for k in ('left', 'top', 'width', 'height'))
         if key not in self.frames:
-            self.frames[key] = self.capture.grab(monitor)
+            started = perf_counter_ns()
+            try:
+                self.frames[key] = self.capture.grab(monitor)
+            except Exception:
+                self.failed_grab = monitor, perf_counter_ns() - started
+                raise
+            finally:
+                self.capture_ns += perf_counter_ns() - started
         return self.frames[key]
+
+
+class FrameTimings:
+    """Measure non-overlapping stage durations and retain the failing operation."""
+    def __init__(self, capture):
+        self.capture = capture
+        self.color_ns = 0
+        self.udp_send_ns = 0
+        self.failed_stage = 'frame'
+        self.failed_stage_ns = None
+        self.failed_monitor = None
+        self.target = None
+
+    @contextmanager
+    def color(self):
+        capture_before = self.capture.capture_ns
+        started = perf_counter_ns()
+        try:
+            yield
+        except Exception:
+            if self.capture.failed_grab is not None:
+                self.failed_stage = 'capture'
+                self.failed_monitor, self.failed_stage_ns = self.capture.failed_grab
+            else:
+                self.failed_stage = 'color'
+                self.failed_stage_ns = perf_counter_ns() - started - (self.capture.capture_ns - capture_before)
+            raise
+        finally:
+            self.color_ns += perf_counter_ns() - started - (self.capture.capture_ns - capture_before)
+
+    def send(self, udp_socket, payload, address):
+        started = perf_counter_ns()
+        try:
+            return udp_socket.sendto(payload, address)
+        except Exception:
+            self.failed_stage = 'udp_send'
+            self.failed_stage_ns = perf_counter_ns() - started
+            raise
+        finally:
+            self.udp_send_ns += perf_counter_ns() - started
+
+    def durations_ns(self):
+        return {'capture': self.capture.capture_ns, 'color': self.color_ns, 'udp_send': self.udp_send_ns}
 
 
 @lru_cache(maxsize=64)

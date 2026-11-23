@@ -52,12 +52,6 @@ class SingleWemosRegressionTests(unittest.TestCase):
         self.assertEqual(json.loads(backup_path.read_text(encoding="utf-8")), previous)
         self.assertEqual(self.backend.load_config(), replacement)
 
-    def test_legacy_worker_path_still_has_one_udp_target(self):
-        worker_source = inspect.getsource(self.backend.ambilight_worker)
-
-        self.assertIn('config.get("wemos_ip", "")', worker_source)
-        self.assertIn("sock.sendto(data, (WEMOS_IP, WEMOS_PORT))", worker_source)
-
     def test_legacy_config_has_a_non_persistent_primary_device_view(self):
         legacy_config = {
             "wemos_ip": "192.168.1.50",

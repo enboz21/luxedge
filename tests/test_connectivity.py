@@ -2,6 +2,7 @@ import threading
 import io
 import json
 import unittest
+from urllib.error import HTTPError
 from unittest import mock
 from connectivity import Connectivity
 from backend_fixture import backend
@@ -70,6 +71,37 @@ class ConnectivityTests(unittest.TestCase):
         with mock.patch.object(backend,'ping_wemos',return_value=False), \
              mock.patch.object(backend,'check_wemos_http',return_value=True):
             self.assertEqual(backend.probe_wemos('192.0.2.1'),(False,True))
+
+    def test_automatic_udp_success_records_http_as_skipped(self):
+        observations = []
+        with mock.patch.object(backend, 'ping_wemos', return_value=True), \
+             mock.patch.object(backend, 'check_wemos_http') as http:
+            self.assertEqual(backend.probe_wemos('192.0.2.1', 7778, observations=observations), (True, None))
+        http.assert_not_called()
+        udp, skipped = observations
+        self.assertEqual((udp['port'], udp['timeout_ms'], udp['tested'], udp['ok']), (7778, 1000, True, True))
+        self.assertEqual((skipped['port'], skipped['tested'], skipped['ok'], skipped['elapsed_ms']),
+                         (80, False, None, None))
+        self.assertEqual(skipped['skip_reason'], 'UDP yanıt verdi')
+
+    def test_probe_records_udp_timeout_and_http_rejection_separately(self):
+        observations = []
+        http_error = HTTPError('http://192.0.2.1/status', 503, 'Unavailable', {}, None)
+        with mock.patch.object(backend.socket, 'socket') as create_socket, \
+             mock.patch('urllib.request.urlopen', side_effect=http_error):
+            sock = create_socket.return_value.__enter__.return_value
+            sock.recvfrom.side_effect = TimeoutError
+            self.assertEqual(backend.probe_wemos('192.0.2.1', observations=observations), (False, False))
+        sock.settimeout.assert_called_once_with(1.0)
+        udp, http = observations
+        self.assertEqual((udp['timed_out'], udp['error_type']), (True, 'TimeoutError'))
+        self.assertEqual((http['timed_out'], http['http_status'], http['error_type']), (False, 503, 'HTTPError'))
+        self.assertTrue(all(probe['tested'] and probe['elapsed_ms'] >= 0 for probe in observations))
+
+    def test_http_failure_streak_survives_skipped_http_probe(self):
+        self.assertEqual(self.result(False, False)['http_consecutive_failures'], 1)
+        self.assertEqual(self.result(True, None)['http_consecutive_failures'], 1)
+        self.assertEqual(self.result(True, True)['http_consecutive_failures'], 0)
 
     def test_cancel_during_probe_cannot_publish(self):
         cancel = threading.Event()

@@ -11,10 +11,14 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from http.client import HTTPException
+from connectivity import describe_probe, next_probe_at, probe_error, probe_result
+from windows_wfp import TCP, transport_error
 
 UNKNOWN = 'Nedeni belirlenemedi'
 POLL_SECONDS = 5
 BACKOFF_SECONDS = 30
+STATUS_SAMPLE_SECONDS = 15
+HTTP_TIMEOUT = 1.5
 BOOT_ID = re.compile(r'[0-9a-f]{16}')
 UINT32_MAX = 2**32 - 1
 WIFI_REASONS = {
@@ -56,7 +60,34 @@ EVENTS = {
     15: ('wifi_connect_failed', logging.WARNING, 'Wemos Wi-Fi bağlantısı kuramadı', 'Cihaz bağlantı denemeleri sonrasında kurulum ağına geçti.'),
     16: ('stream_resumed', logging.INFO, 'Wemos LED akışı geri geldi', 'Akış kurtarma adımından sonra geçerli LED verisi alındı.'),
     17: ('hotspot_failed', logging.ERROR, 'Wemos kurulum hotspot ağını başlatamadı', 'ESP8266 kurulum ağı yapılandırma veya başlatma hatası bildirdi.'),
+    18: ('stream_first_frame', logging.INFO, 'Wemos ilk geçerli LED karesini uyguladı', 'Wemos geçerli RGB paketindeki LED renklerini şeritlere uyguladı.'),
+    19: ('stream_idle_entered', logging.INFO, 'Wemos akış kesilince bekleme animasyonuna geçti', 'Wemos daha önce LED verisi almıştı ve yeni kare gelmeyince bekleme animasyonu gösterdi.'),
+    20: ('stream_idle_exited', logging.INFO, 'Wemos bekleme animasyonundan LED akışına döndü', 'Wemos yeniden geçerli bir LED karesi aldı ve şeritlere uyguladı.'),
 }
+
+
+def status_measurements(status):
+    measurements = {}
+    for key in ('wifi_connected', 'udp_running', 'has_received_led_data', 'receiving_data', 'sleep_mode'):
+        if type(status.get(key)) is bool:
+            measurements[key] = status[key]
+    for key in ('last_data_age_ms', 'last_udp_age_ms'):
+        value = status.get(key)
+        if type(value) is int and -1 <= value <= UINT32_MAX:
+            measurements[key] = value if value >= 0 else None
+    for key in ('uptime_seconds', 'udp_rebind_count', 'wifi_recovery_count', 'stream_led_count'):
+        value = status.get(key)
+        if type(value) is int and 0 <= value <= UINT32_MAX:
+            measurements[key] = value
+    rssi = status.get('rssi')
+    if type(rssi) is int and -128 <= rssi < 0 and status.get('wifi_connected') is not False:
+        measurements['rssi_dbm'] = rssi
+    if measurements:
+        for key in ('firmware_version', 'reset_reason'):
+            value = status.get(key)
+            if isinstance(value, str) and value:
+                measurements[key] = value[:128]
+    return measurements
 
 
 class InvalidDiagnostics(ValueError):
@@ -65,7 +96,7 @@ class InvalidDiagnostics(ValueError):
 
 def read_json(ip, path, limit):
     url = f'http://{ip}{path}'
-    with urllib.request.urlopen(url, timeout=1.5) as response:
+    with urllib.request.urlopen(url, timeout=HTTP_TIMEOUT) as response:
         if response.headers.get_content_type() != 'application/json':
             raise InvalidDiagnostics('Beklenmeyen içerik türü')
         body = response.read(limit + 1)
@@ -116,12 +147,18 @@ class DevicePoll:
     gap_until: int = 0
     delivery_key: tuple = ()
     delivery: dict = field(default_factory=dict)
+    probes: dict = field(default_factory=dict)
+    probe_failures: dict = field(default_factory=dict)
+    backoff_seconds: int = 0
+    next_status_poll: float | None = None
+    status_sample: dict | None = None
 
 
 class WemosDiagnostics:
-    def __init__(self, log, log_history, devices):
+    def __init__(self, log, log_history, devices, *, wfp_submit=None):
         self.log = log
         self.devices = devices
+        self.wfp_submit = wfp_submit
         self.states = {}
         self.saved = {}
         for row in log_history:
@@ -168,10 +205,17 @@ class WemosDiagnostics:
             'event_code': number,
             'event_timestamp_estimated': estimate.isoformat(timespec='milliseconds'),
             'received_at': received.isoformat(timespec='milliseconds'),
+            'event_age_ms_at_receipt': age_ms,
         }
         if number == 3 and arg:
             message = 'Wemos Wi-Fi bağlantısı geri geldi'
             details['outage_ms'] = arg
+        if number in (10, 11, 12, 19, 20):
+            details['stream_gap_ms'] = arg
+        elif number == 16:
+            details['recovery_stage'] = arg
+        elif number == 18:
+            details['applied_led_count'] = arg
         saved = self._log(
             device, code, level, message, explanation, causes, details,
             count=max(1, arg) if number in (8, 9) else 1,
@@ -181,27 +225,59 @@ class WemosDiagnostics:
             state.boot, state.seq = boot, row['seq']
         return saved
 
+    def _read_probe(self, state, ip, endpoint, path):
+        observation = state.probes[endpoint]
+        observation.update(tested=True, ok=False, skip_reason=None)
+        started = time.perf_counter()
+        started_at = time.time()
+        try:
+            data = read_json(ip, path, 4096)
+            observation['ok'] = True
+            return data
+        except Exception as error:
+            observation.update(probe_error(error))
+            if self.wfp_submit is not None and transport_error(error):
+                self.wfp_submit(f'HTTP {endpoint}', ip, 80, TCP, started_at)
+            raise
+        finally:
+            observation['elapsed_ms'] = round((time.perf_counter() - started) * 1000, 1)
+
     def _poll(self, device, state):
+        state.backoff_seconds = 0
+        state.status_sample = None
+        state.probes = {
+            '/status': probe_result('HTTP /status', device['ip'], 80, HTTP_TIMEOUT, 'durum örnekleme zamanı gelmedi'),
+            '/diagnostics': probe_result('HTTP /diagnostics', device['ip'], 80, HTTP_TIMEOUT, 'geçerli /status yanıtı gerekli'),
+        }
         try:
             ip = str(ipaddress.IPv4Address(device['ip']))
         except ValueError:
+            for observation in state.probes.values():
+                observation['skip_reason'] = 'geçersiz IPv4 hedefi'
             return
         try:
-            if not state.supported:
-                status = read_json(ip, '/status', 4096)
-                if status.get('diagnostics_version') != 1:
+            needs_capability = not state.supported
+            status_due = state.next_status_poll is not None and time.monotonic() >= state.next_status_poll
+            if needs_capability or status_due:
+                status = self._read_status(state, ip)
+                if needs_capability and status.get('diagnostics_version') != 1:
+                    state.probes['/diagnostics']['skip_reason'] = 'firmware tanılama desteği bildirmedi'
                     self._reached(device, state)
                     if not state.unsupported_reported:
                         self._log(device, 'diagnostics_unsupported', logging.INFO,
                                   'Wemos firmware sürümü olay kaydı paylaşmıyor',
                                   'Cihazın durum servisi çalışıyor ancak tanılama desteği bildirmiyor.', source='pc')
                         state.unsupported_reported = True
-                    state.next_poll = time.monotonic() + BACKOFF_SECONDS
+                    self._backoff(state)
                     return
             query = urllib.parse.urlencode({'boot': state.boot, 'after': state.seq})
-            batch = read_json(ip, '/diagnostics?' + query, 4096)
+            batch = self._read_probe(state, ip, '/diagnostics', '/diagnostics?' + query)
             received = datetime.now(timezone.utc)
-            boot, rows = validated_batch(batch, state.boot, state.seq)
+            try:
+                boot, rows = validated_batch(batch, state.boot, state.seq)
+            except InvalidDiagnostics as error:
+                state.probes['/diagnostics'].update(ok=False, **probe_error(error))
+                raise
             self._reached(device, state)
             state.supported = True
             state.unsupported_reported = False
@@ -236,7 +312,7 @@ class WemosDiagnostics:
             with error:
                 if error.code == 404 and state.supported:
                     state.supported = False
-                    state.next_poll = time.monotonic() + BACKOFF_SECONDS
+                    self._backoff(state)
                     return
             self._fault(device, state, 'diagnostics_invalid', 'Wemos tanılama yanıtı alınamadı',
                         'Wemos HTTP servisi hata döndürdü.')
@@ -249,11 +325,71 @@ class WemosDiagnostics:
             self._fault(device, state, 'wemos_unreachable', 'PC, Wemos HTTP servisine erişemedi',
                         'Cihaz bu tanılama sorgusuna yanıt vermedi.')
 
+    def _read_status(self, state, ip):
+        state.next_status_poll = time.monotonic() + STATUS_SAMPLE_SECONDS
+        try:
+            status = self._read_probe(state, ip, '/status', '/status')
+        except (OSError, HTTPException, ValueError, RecursionError) as error:
+            if not state.supported:
+                raise
+            if isinstance(error, urllib.error.HTTPError):
+                error.close()
+            return {}
+        received_at = datetime.now(timezone.utc).isoformat(timespec='milliseconds')
+        measurements = status_measurements(status)
+        if measurements:
+            state.status_sample = {'received_at': received_at, **measurements}
+        return status
+
+    def _log_status_sample(self, device, sample):
+        if not sample:
+            return
+        fields = []
+        for key, label in (('last_data_age_ms', 'son LED verisi'), ('last_udp_age_ms', 'son UDP paketi')):
+            if key in sample:
+                value = sample[key]
+                fields.append(f'{label}: {value} ms önce' if value is not None else f'{label}: henüz yok')
+        if 'receiving_data' in sample:
+            fields.append('LED akışı: ' + ('alınıyor' if sample['receiving_data'] else 'alınmıyor'))
+        if 'rssi_dbm' in sample:
+            fields.append(f"Wi-Fi RSSI: {sample['rssi_dbm']} dBm")
+        message = f"[WEMOS] {device['ip']} durum ölçümü"
+        if fields:
+            message += ' | ' + ' | '.join(fields)
+        self._log(device, 'wemos_status_sample', logging.INFO, message,
+                  'Wemos tarafından /status yanıtında bildirilen ölçümler.', details=sample)
+
     def _fault(self, device, state, code, message, explanation):
-        state.next_poll = time.monotonic() + BACKOFF_SECONDS
+        self._backoff(state)
         if state.fault != code:
-            self._log(device, code, logging.WARNING, message, explanation, [UNKNOWN], source='pc')
+            failed = next((probe for probe in reversed(state.probes.values()) if probe['ok'] is False), None)
+            details = {'probe': dict(failed) if failed else None, 'backoff_ms': state.backoff_seconds * 1000}
+            self._log(device, code, logging.WARNING, message, explanation, [UNKNOWN], details=details, source='pc')
             state.fault = code
+
+    @staticmethod
+    def _backoff(state):
+        state.backoff_seconds = BACKOFF_SECONDS
+        state.next_poll = time.monotonic() + BACKOFF_SECONDS
+
+    def _log_probes(self, device, state):
+        observations = list(state.probes.values())
+        for endpoint, probe in state.probes.items():
+            failures = state.probe_failures.get(endpoint, 0)
+            if probe['tested']:
+                failures = 0 if probe['ok'] else failures + 1
+                state.probe_failures[endpoint] = failures
+            probe['consecutive_failures'] = failures
+        delay = max(0, state.next_poll - time.monotonic())
+        message = f"[TANILAMA] {device['ip']} | " + ' | '.join(map(describe_probe, observations))
+        message += f' | sonraki yoklama: ~{delay:.1f} sn'
+        if state.backoff_seconds:
+            message += f' (geri çekilme: {state.backoff_seconds} sn)'
+        self._log(device, 'wemos_http_probes', logging.INFO, message,
+                  'PC tarafından yapılan HTTP durum ve olay toplama yoklamaları.', source='pc', details={
+                      'probes': observations, 'backoff_ms': state.backoff_seconds * 1000,
+                      'next_try_in_ms': round(delay * 1000), 'next_try_at': next_probe_at(delay),
+                  })
 
     def _reached(self, device, state):
         if state.connected is False:
@@ -281,12 +417,19 @@ class WemosDiagnostics:
                         self.states[key] = DevicePoll(boot, seq)
                     state = self.states[key]
                     if state.ip != device['ip']:
+                        if state.ip:
+                            self._log(device, 'diagnostics_target_changed', logging.INFO,
+                                      f"[TANILAMA] Hedef değişti: {state.ip} → {device['ip']}",
+                                      'Yeni adreste destek ve erişim yeniden sorgulanacak.', source='pc',
+                                      details={'previous_ip': state.ip})
                         state.ip = device['ip']
                         state.next_poll = 0
                         state.connected = None
                         state.supported = False
                         state.unsupported_reported = False
                         state.fault = ''
+                        state.probe_failures.clear()
+                        state.next_status_poll = None
                     if now >= state.next_poll:
                         state.next_poll = now + POLL_SECONDS
                         pending.append((device, state, pool.submit(self._poll, device, state)))
@@ -297,4 +440,6 @@ class WemosDiagnostics:
                         self._fault(device, state, 'diagnostics_poll_failed',
                                     'PC tanılama sorgusu tamamlanamadı',
                                     'Tanılama toplayıcısı sorguyu işlerken hata oluştu.')
+                    self._log_probes(device, state)
+                    self._log_status_sample(device, state.status_sample)
                 stop.wait(1)

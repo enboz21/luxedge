@@ -28,12 +28,15 @@ def verify():
     hashes = [hashlib.sha256(p.read_bytes()).hexdigest() for p in paths]
     assert len(set(hashes)) == 1, 'Backend binaries differ'
     archive = CArchiveReader(str(binary))
-    backend_code = marshal.loads(archive.extract('ambilight_pc'))
-    frame_code = archive.open_embedded_archive('PYZ.pyz').extract('frame_processing')
-    catalog_code = archive.open_embedded_archive('PYZ.pyz').extract('monitor_catalog')
-    connectivity_code = archive.open_embedded_archive('PYZ.pyz').extract('connectivity')
-    overview_code = archive.open_embedded_archive('PYZ.pyz').extract('device_overview')
-    for name, code in [('ambilight_pc', backend_code), ('frame_processing', frame_code), ('monitor_catalog', catalog_code), ('connectivity', connectivity_code), ('device_overview', overview_code)]:
+    modules = archive.open_embedded_archive('PYZ.pyz')
+    embedded = (
+        'frame_processing', 'monitor_catalog', 'connectivity', 'device_overview',
+        'diagnostic_logs', 'stream_diagnostics', 'wemos_diagnostics',
+        'windows_wfp', 'windows_audit_session', 'windows_audit_helper',
+    )
+    code_by_name = {'ambilight_pc': marshal.loads(archive.extract('ambilight_pc'))}
+    code_by_name.update({name: modules.extract(name) for name in embedded})
+    for name, code in code_by_name.items():
         source = (ROOT / f'{name}.py').read_text(encoding='utf-8')
         assert same_code(code, compile(source, f'{name}.py', 'exec')), f'Stale code: {name}'
     print('Backend bytecode matches current source; SHA256:', hashes[0])

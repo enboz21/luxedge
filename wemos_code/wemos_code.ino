@@ -8,7 +8,7 @@
 #include <ESP8266HTTPUpdateServer.h>
 #include <user_interface.h>
 
-#define FIRMWARE_VERSION "1.7.3"
+#define FIRMWARE_VERSION "1.7.4"
 #define UDP_PORT  7777
 #define DNS_PORT  53
 #define STATUS_BRIGHTNESS 64 // Sistem animasyonları: yaklaşık %25 güç
@@ -87,7 +87,8 @@ enum DiagnosticCode : uint8_t {
   DIAG_HOTSPOT, DIAG_UDP_BOUND, DIAG_UDP_BIND_FAILED, DIAG_UDP_REPLY_FAILED,
   DIAG_UDP_INVALID, DIAG_STREAM_UDP_RETRY, DIAG_STREAM_WIFI_RETRY,
   DIAG_STREAM_RESTART, DIAG_RESTART_REQUESTED, DIAG_OTA_FAILED,
-  DIAG_WIFI_CONNECT_FAILED, DIAG_STREAM_RESUMED, DIAG_HOTSPOT_FAILED
+  DIAG_WIFI_CONNECT_FAILED, DIAG_STREAM_RESUMED, DIAG_HOTSPOT_FAILED,
+  DIAG_FIRST_LED_FRAME_APPLIED = 18, DIAG_STREAM_IDLE_ENTERED = 19, DIAG_STREAM_IDLE_EXITED = 20
 };
 
 struct DiagnosticEvent {
@@ -228,7 +229,10 @@ unsigned long lastAnimUpdate = 0;    // Son animasyon güncellemesi
 int idleAnimPos = 0;                 // Halka pozisyonu
 bool receivingData = false;          // PC'den veri geliyor mu?
 bool isSleepMode = false;            // Uyku modu (LED'ler kapalı)
-bool hasReceivedLedData = false;      // Bu açılışta en az bir geçerli LED paketi alındı mı?
+bool hasReceivedLedData = false;      // Bu açılışta en az bir LED karesi şeride uygulandı mı?
+// İlk açılıştaki animasyon ile akış kesintisi sonrası başlayan animasyonu ayırır.
+enum class StreamDisplayState : uint8_t { WaitingForFrame, ShowingFrame, IdleAfterStream };
+StreamDisplayState streamDisplayState = StreamDisplayState::WaitingForFrame;
 unsigned long lastUdpActivityTime = 0;// Son geçerli UDP paketi zamanı (PING/discovery/LED)
 unsigned long lastHttpActivityTime = 0;// Son HTTP /status isteği zamanı
 unsigned int udpRebindCount = 0;      // Tanılama: UDP soketi kaç kez yenilendi
@@ -729,6 +733,7 @@ void loadWiFiCredentials() {
 
 void startHotspot() {
   Serial.println("Hotspot modu başlatılıyor...");
+  streamDisplayState = StreamDisplayState::WaitingForFrame;
 
   // Önce eski bağlantıları ve soketleri temizle
   Udp.stop();
@@ -1078,8 +1083,10 @@ void handleSegmentsPost() {
   }
 
   if (changed) {
+    bool keepsStreamStrip = false;
     for (uint8_t i = 0; i < STRIP_COUNT; i++) {
       bool modeChanged = updated[i].mode != segments[i].mode;
+      if (!modeChanged && isStreamStrip(i)) keepsStreamStrip = true;
       segments[i] = updated[i];
       if (modeChanged && stripLedCounts[i] > 0) {
         // Moddan çıkan şeridi temizle ki eski desen asılı kalmasın.
@@ -1092,6 +1099,7 @@ void handleSegmentsPost() {
       }
     }
     segmentsDirty = true;
+    if (!keepsStreamStrip) streamDisplayState = StreamDisplayState::WaitingForFrame;
     if (server.arg("save") == "1") {
       saveSegmentConfig();
       Serial.println("Serit ayarlari EEPROM'a kaydedildi.");
@@ -1111,6 +1119,7 @@ void handleRestart() {
 void handleToggleSleep() {
   isSleepMode = !isSleepMode;
   if (isSleepMode) {
+    streamDisplayState = StreamDisplayState::WaitingForFrame;
     clearAllStrips();
     Serial.println("Uyku modu AKTIF: LED'ler kapatildi.");
     server.send(200, "text/plain", "SLEEP_ON");
@@ -1398,8 +1407,8 @@ void loop() {
           Serial.println("PING yanıtlandı");
         }
         // 3. LED Verisi - Yalnız STREAM modundaki seritlere sirayla dagitilir
-        else if (!isSleepMode && len >= 3 && len % 3 == 0) {
-          int receivedLedCount = len / 3;
+        else if (!isSleepMode && read == packetSize && read >= 3 && read % 3 == 0) {
+          int receivedLedCount = read / 3;
           uint16_t streamTotal = streamLedCount();
           if (receivedLedCount > streamTotal) receivedLedCount = streamTotal;
           int inputOffset = 0;
@@ -1422,7 +1431,15 @@ void loop() {
             inputOffset += ledsForStrip;
             strip->show();
           }
-          lastDataTime = millis();
+          if (inputOffset == 0) continue;
+          const unsigned long appliedAt = millis();
+          if (!hasReceivedLedData) {
+            addDiagnostic(DIAG_FIRST_LED_FRAME_APPLIED, inputOffset);
+          } else if (streamDisplayState == StreamDisplayState::IdleAfterStream) {
+            addDiagnostic(DIAG_STREAM_IDLE_EXITED, appliedAt - lastDataTime);
+          }
+          streamDisplayState = StreamDisplayState::ShowingFrame;
+          lastDataTime = appliedAt;
           receivingData = true;
           hasReceivedLedData = true;
           if (dataRecoveryStage) addDiagnostic(DIAG_STREAM_RESUMED, dataRecoveryStage);
@@ -1480,7 +1497,7 @@ void loop() {
     }
 
     // Bekleme animasyonu: yalniz STREAM seritlerinde ve veri yokken.
-    if (expectsStream && now - lastDataTime > 500) {
+    if (expectsStream && now - lastDataTime > 1500) {
       receivingData = false;
       if (now - lastAnimUpdate > 50) {
         lastAnimUpdate = now;
@@ -1499,6 +1516,10 @@ void loop() {
           strip->show();
         }
         idleAnimPos = (idleAnimPos + 1) % MAX_LED_COUNT;
+        if (streamDisplayState == StreamDisplayState::ShowingFrame) {
+          addDiagnostic(DIAG_STREAM_IDLE_ENTERED, millis() - lastDataTime);
+          streamDisplayState = StreamDisplayState::IdleAfterStream;
+        }
       }
     }
   }

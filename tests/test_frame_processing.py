@@ -98,6 +98,7 @@ class FrameTests(unittest.TestCase):
 
         def send(data, address):
             packets.append((bytes(data), address))
+            return len(data)
 
         def sleep(delay):
             sleeps.append(delay)
@@ -150,6 +151,15 @@ class FrameTests(unittest.TestCase):
         self.assertEqual(len(capture.calls), 7)
         # Existing mode activation timing (first 3-second refresh) is unchanged.
         self.assertEqual(len(packets), 3 + 4*2)
+        self.assertEqual([address for _, address in packets[:3]], [('192.0.2.1', 7777)] * 3)
+        self.assertEqual([address for _, address in packets[3:]], [('192.0.2.1', 7777), ('192.0.2.2', 7777)] * 4)
+
+    def test_worker_updates_socket_destination_when_ip_and_port_change(self):
+        refresh = dict(wemos_ip='192.0.2.9', wemos_port=7779, top_leds=2, bottom_leds=0,
+                       left_leds=1, right_leds=1, led_monitor_index=1)
+        _, packets, _, _ = self.run_worker(refresh=refresh)
+        self.assertEqual([address for _, address in packets],
+                         [('192.0.2.1', 7777)] * 3 + [('192.0.2.9', 7779)] * 4)
 
     def test_idle_worker_captures_nothing_and_keeps_udp_cadence(self):
         capture, packets, _, _ = self.run_worker(idle=True)

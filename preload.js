@@ -16,6 +16,15 @@ contextBridge.exposeInMainWorld('luxedge', {
     // Ayarlar
     saveConfig: (config) => ipcRenderer.invoke('save-config', config),
     getLogs: () => ipcRenderer.invoke('get-logs'),
+    getLogArchive: query => ipcRenderer.invoke('get-log-archive', query),
+    setLogRetention: settings => ipcRenderer.invoke('set-log-retention', settings),
+    getLiveLogFileState: () => ipcRenderer.invoke('get-live-log-file-state'),
+    startLiveLogFile: () => ipcRenderer.invoke('start-live-log-file'),
+    stopLiveLogFile: () => ipcRenderer.invoke('stop-live-log-file'),
+    saveIncidentLog: range => ipcRenderer.invoke('save-incident-log', range),
+    getWindowsDiagnostics: () => ipcRenderer.invoke('windows-diagnostics-status'),
+    startWindowsDiagnostics: () => ipcRenderer.invoke('windows-diagnostics-start'),
+    stopWindowsDiagnostics: () => ipcRenderer.invoke('windows-diagnostics-stop'),
 
     // Pasif çoklu-Wemos cihaz kayıtları
     getDevices: () => ipcRenderer.invoke('get-devices'),

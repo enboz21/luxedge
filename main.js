@@ -3,13 +3,16 @@
 // Akıllı Ekran Kenar Aydınlatma Kontrol Sistemi
 // ============================================================
 
-const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, Tray, Menu, nativeImage } = require('electron');
 const { spawn } = require('child_process');
 const http = require('http');
 const net = require('net');
 const path = require('path');
 const fs = require('fs');
-const { randomUUID } = require('crypto');
+const { randomBytes, randomUUID } = require('crypto');
+const { pathToFileURL, URLSearchParams } = require('url');
+const logArchive = require(path.join(__dirname, 'log_archive.js'));
+const liveText = require(path.join(__dirname, 'live_log.js'));
 
 let mainWindow;
 let pythonProcess;
@@ -17,22 +20,31 @@ let pythonProcess;
 const backendOutput = [];
 let backendExit = null;
 const LOG_LIMIT = 1000;
-const ELECTRON_LOG_BYTES = 2 * 1024 * 1024;
-const ELECTRON_LOG_BACKUPS = 5;
 let electronLogs;
 let electronLogsReadable = true;
 let electronLogsWritable = true;
 let electronLogNeedsSeparator = false;
+let electronLastOrder = 0;
+let retentionWork = Promise.resolve();
+let liveLogFile = null;
+let liveLogAction = false;
+let liveLogStartWork = null;
+let incidentLogAction = false;
+let incidentLogWork = null;
+
+function logDirectory() {
+    return path.join(process.env.APPDATA || app.getPath('appData'), 'LuxEdge');
+}
 
 function electronLogPath() {
-    return path.join(process.env.APPDATA || app.getPath('appData'), 'LuxEdge', 'luxedge-electron.jsonl');
+    return path.join(logDirectory(), 'luxedge-electron.jsonl');
 }
 
 function readElectronLogTail(file) {
     const descriptor = fs.openSync(file, 'r');
     try {
         const size = fs.fstatSync(descriptor).size;
-        const offset = Math.max(0, size - ELECTRON_LOG_BYTES);
+        const offset = Math.max(0, size - logArchive.SEGMENT_BYTES);
         const buffer = Buffer.alloc(size - offset);
         const length = fs.readSync(descriptor, buffer, 0, buffer.length, offset);
         const contents = buffer.toString('utf8', 0, length);
@@ -48,16 +60,29 @@ function readElectronLogs() {
     if (electronLogs) return electronLogs;
     electronLogs = [];
     const file = electronLogPath();
-    for (let index = 0; index <= ELECTRON_LOG_BACKUPS && electronLogs.length < LOG_LIMIT; index++) {
+    let files;
+    try {
+        files = logArchive.sortedElectronFiles(logDirectory());
+    } catch (error) {
+        files = [];
+        electronLogsReadable = false;
+        console.warn('[LuxEdge] Electron günlük dizini okunamadı:', error.message);
+    }
+    for (const segment of files) {
+        if (electronLogs.length >= LOG_LIMIT) break;
         try {
-            const contents = readElectronLogTail(index ? file + '.' + index : file);
-            if (!index && !contents.endsWith('\n')) electronLogNeedsSeparator = true;
+            const contents = readElectronLogTail(segment);
+            if (segment === file && !contents.endsWith('\n')) electronLogNeedsSeparator = true;
             const lines = contents.split(/\r?\n/);
             for (let n = lines.length - 1; n >= 0 && electronLogs.length < LOG_LIMIT; n--) {
                 if (!lines[n]) continue;
                 try {
                     const entry = JSON.parse(lines[n]);
-                    if (entry?.source === 'electron' && typeof entry.timestamp === 'string') electronLogs.push(entry);
+                    if (entry?.source === 'electron' && typeof entry.timestamp === 'string') {
+                        electronLogs.push(entry);
+                        const order = logArchive.rowOrder(entry);
+                        if (Number.isSafeInteger(order)) electronLastOrder = Math.max(electronLastOrder, order);
+                    }
                 } catch {
                     // A partial line from an interrupted write does not invalidate the rest.
                 }
@@ -73,8 +98,11 @@ function readElectronLogs() {
 }
 
 function logElectron(level, code, msg, explanation, details = '') {
+    const recent = readElectronLogs();
+    electronLastOrder = Math.max(Date.now() * 1000, electronLastOrder + 1);
     const entry = {
         id: 'electron:' + randomUUID(),
+        archive_order_us: electronLastOrder,
         timestamp: new Date().toISOString(),
         level,
         msg,
@@ -83,21 +111,22 @@ function logElectron(level, code, msg, explanation, details = '') {
         explanation,
         details: String(details).slice(0, 2000)
     };
-    const recent = readElectronLogs();
     recent.push(entry);
     if (recent.length > LOG_LIMIT) recent.shift();
+    if (liveLogFile) liveLogFile.addElectron(entry);
     const file = electronLogPath();
     const line = JSON.stringify(entry) + '\n';
     try {
         fs.mkdirSync(path.dirname(file), { recursive: true });
-        if (fs.existsSync(file) && fs.statSync(file).size + Buffer.byteLength(line) + 1 > ELECTRON_LOG_BYTES) {
-            for (let index = ELECTRON_LOG_BACKUPS; index > 0; index--) {
-                const previous = index === 1 ? file : file + '.' + (index - 1);
-                if (fs.existsSync(previous)) fs.renameSync(previous, file + '.' + index);
-            }
+        const info = fs.existsSync(file) ? fs.lstatSync(file) : null;
+        if (info && !info.isFile()) throw new Error('Günlük dosyası normal bir dosya değil.');
+        if (info?.size && info.size + Buffer.byteLength(line) + 1 > logArchive.SEGMENT_BYTES) {
+            logArchive.rotateElectronLog(file, info.size);
             electronLogNeedsSeparator = false;
+            scheduleLogPrune();
         }
         fs.appendFileSync(file, (electronLogNeedsSeparator ? '\n' : '') + line, 'utf8');
+        if (!info) scheduleLogPrune();
         electronLogNeedsSeparator = false;
         electronLogsWritable = true;
     } catch (error) {
@@ -105,6 +134,12 @@ function logElectron(level, code, msg, explanation, details = '') {
         electronLogNeedsSeparator = true;
         console.warn('[LuxEdge] Electron günlüğüne yazılamadı:', error.message);
     }
+}
+
+function scheduleLogPrune() {
+    retentionWork = retentionWork.then(() => logArchive.prune(logDirectory())).catch(error => {
+        console.warn('[LuxEdge] Günlük saklama sınırı uygulanamadı:', error.message);
+    });
 }
 function rememberBackendOutput(text) {
     for (const line of text.split(/\r?\n/)) {
@@ -119,6 +154,22 @@ const ownsInstance = app.requestSingleInstanceLock();
 let PYTHON_PORT = Number(process.env.LUXEDGE_BACKEND_PORT || 8888);
 const PORT_PINNED = Boolean(process.env.LUXEDGE_BACKEND_PORT);
 const APP_VERSION = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).luxedgeVersion;
+const CONTROL_PANEL_FILE = path.join(__dirname, 'web_ui', 'index.html');
+const CONTROL_PANEL_URL = pathToFileURL(CONTROL_PANEL_FILE).href;
+const WINDOWS_DIAGNOSTICS_TOKEN = randomBytes(32).toString('hex');
+const LIVE_LOG_TOKEN = randomBytes(32).toString('hex');
+const WINDOWS_DIAGNOSTICS_ENDPOINT = '/api/windows-diagnostics';
+const WINDOWS_DIAGNOSTICS_ROUTES = {
+    status: { endpoint: WINDOWS_DIAGNOSTICS_ENDPOINT, method: 'GET', body: null },
+    start: { endpoint: WINDOWS_DIAGNOSTICS_ENDPOINT + '/start', method: 'POST', body: {} },
+    stop: { endpoint: WINDOWS_DIAGNOSTICS_ENDPOINT + '/stop', method: 'POST', body: {} },
+};
+const WINDOWS_AUDIT_SUBCATEGORIES = {
+    '5152': '0cce9225-69ae-11d9-bed3-505054503030',
+    '5157': '0cce9226-69ae-11d9-bed3-505054503030',
+};
+let windowsDiagnosticsAction = false;
+let windowsDiagnosticsCleanupNeeded = false;
 
 // Kurulu (tepsi) LuxEdge 8888'i tutuyorsa yeni backend başka porta kaymasın diye
 // portu Electron seçer ve backend'e ortam değişkeniyle verir.
@@ -212,10 +263,10 @@ function pythonDelete(endpoint, timeout = 5000) {
     return pythonRequest(endpoint, 'DELETE', null, timeout);
 }
 
-function pythonRequest(endpoint, method, body, timeout) {
+function pythonRequest(endpoint, method, body, timeout, extraHeaders = {}) {
     return new Promise((resolve, reject) => {
         const jsonData = body === null ? null : JSON.stringify(body);
-        const headers = { 'Content-Type': 'application/json' };
+        const headers = { 'Content-Type': 'application/json', ...extraHeaders };
         if (jsonData !== null) headers['Content-Length'] = Buffer.byteLength(jsonData);
         const options = {
             hostname: '127.0.0.1', port: PYTHON_PORT,
@@ -272,7 +323,11 @@ function startPython() {
 
         pythonProcess = spawn(executable, args, {
             cwd: cwd,
-            env: { ...process.env, PYTHONUNBUFFERED: "1", LUXEDGE_BACKEND_PORT: String(PYTHON_PORT) },
+            env: {
+                ...process.env, PYTHONUNBUFFERED: "1", LUXEDGE_BACKEND_PORT: String(PYTHON_PORT),
+                LUXEDGE_WINDOWS_DIAGNOSTICS_TOKEN: WINDOWS_DIAGNOSTICS_TOKEN,
+                LUXEDGE_LIVE_LOG_TOKEN: LIVE_LOG_TOKEN,
+            },
             windowsHide: true,
             detached: false
         });
@@ -376,7 +431,12 @@ function killPython() {
 function requestQuit(relaunch = false) {
     if (shutdownPromise) return shutdownPromise;
     app.isQuitting = true;
-    shutdownPromise = killPython().then(() => {
+    const stopBackend = () => {
+        const stopLive = liveLogStartWork ? liveLogStartWork.then(session => session.stop()) : liveLogFile?.stop();
+        return stopLive || incidentLogWork ? Promise.allSettled([stopLive, incidentLogWork]).then(killPython) : killPython();
+    };
+    const closeBackend = windowsDiagnosticsCleanupNeeded ? stopWindowsDiagnosticsOnExit().then(stopBackend) : stopBackend();
+    shutdownPromise = closeBackend.then(() => {
         if (tray) { tray.destroy(); tray = null; }
         if (relaunch) app.relaunch();
         app.exit(0);
@@ -412,7 +472,7 @@ function createWindow() {
             mainWindow.webContents.send('window-visibility', mainWindow.isVisible() && !mainWindow.isMinimized());
         });
     }
-    mainWindow.loadFile(path.join(__dirname, 'web_ui', 'index.html'));
+    mainWindow.loadFile(CONTROL_PANEL_FILE);
 
     mainWindow.once('ready-to-show', () => {
         if (showOnReady || !tray) showControlPanel();
@@ -503,7 +563,173 @@ function hslToRgb(h, s, l) {
 // IPC İŞLEYİCİLERİ
 // ============================================================
 
+function trustedControlPanelFrame(event) {
+    if (!event || !mainWindow || mainWindow.isDestroyed()) return false;
+    const contents = mainWindow.webContents;
+    const frame = event.senderFrame;
+    return event.sender === contents && frame === contents.mainFrame && frame?.url === CONTROL_PANEL_URL;
+}
+
+function readLiveLogJournal(since, through, after) {
+    if (!pythonProcess || pythonProcess.exitCode !== null) return Promise.resolve(null);
+    const query = new URLSearchParams({ since, through, after });
+    return pythonRequest(`/api/live-log-rows?${query}`, 'GET', null, 1000,
+        { 'X-LuxEdge-Live-Log-Token': LIVE_LOG_TOKEN });
+}
+
+async function startLiveLogFile(event) {
+    if (!trustedControlPanelFrame(event) || app.isQuitting) return { state: 'error', message: 'Günlük isteği doğrulanamadı.' };
+    if (liveLogAction || liveLogFile?.state === 'writing') return liveLogFile?.status() || { state: 'idle' };
+    liveLogAction = true;
+    let file;
+    try {
+        file = await liveText.chooseTxt(dialog, mainWindow, app.getPath('desktop'), 'luxedge-canli-gunluk');
+        if (!file || !trustedControlPanelFrame(event) || app.isQuitting) return { state: 'cancelled' };
+        liveLogStartWork = liveText.LiveLogFile.start(file, logDirectory(), readLiveLogJournal);
+        const session = await liveLogStartWork;
+        if (app.isQuitting) return await session.stop();
+        liveLogFile = session;
+        for (const row of readElectronLogs()) if (logArchive.rowOrder(row) >= session.since) session.addElectron(row);
+        return session.status();
+    } catch (error) {
+        return { state: 'error', path: file, message: liveText.fileError(error) };
+    } finally {
+        liveLogAction = false;
+        liveLogStartWork = null;
+    }
+}
+
+async function stopLiveLogFile(event) {
+    if (!trustedControlPanelFrame(event)) return { state: 'error', message: 'Günlük isteği doğrulanamadı.' };
+    return liveLogFile ? liveLogFile.stop() : { state: 'idle' };
+}
+
+async function saveIncidentLog(event, options) {
+    if (!trustedControlPanelFrame(event) || app.isQuitting) return { state: 'error', message: 'Günlük isteği doğrulanamadı.' };
+    if (incidentLogAction) return { state: 'error', message: 'Olay dosyası hazırlanıyor.' };
+    const { from, to, selectedKey } = options || {};
+    if (!Number.isSafeInteger(from) || !Number.isSafeInteger(to) || from < 0 || to < from || to - from > 60_000
+            || to > 8_640_000_000_000_000 || (selectedKey != null && (typeof selectedKey !== 'string' || selectedKey.length > 128))) {
+        return { state: 'error', message: 'Geçersiz olay zaman aralığı.' };
+    }
+    incidentLogAction = true;
+    let file;
+    try {
+        file = await liveText.chooseTxt(dialog, mainWindow, app.getPath('desktop'), 'luxedge-olay-baglami');
+        if (!file || !trustedControlPanelFrame(event) || app.isQuitting) return { state: 'cancelled' };
+        incidentLogWork = (async () => {
+            const backend = await pythonGet('/api/logs?limit=' + LOG_LIMIT, 1000).catch(() => null);
+            const recent = [...readElectronLogs(), ...(Array.isArray(backend?.logs) ? backend.logs : [])];
+            return liveText.writeIncident(file, logDirectory(), from, to, selectedKey, recent);
+        })();
+        return await incidentLogWork;
+    } catch (error) {
+        return { state: 'error', path: file, message: liveText.fileError(error) };
+    } finally {
+        incidentLogAction = false;
+        incidentLogWork = null;
+    }
+}
+
+async function windowsDiagnosticsRequest(action, timeout = 5000) {
+    if (!pythonProcess || pythonProcess.exitCode !== null) {
+        return { state: 'unavailable', reason: 'backend_unavailable' };
+    }
+    const headers = { 'X-LuxEdge-Windows-Diagnostics-Token': WINDOWS_DIAGNOSTICS_TOKEN };
+    try {
+        const { endpoint, method, body } = WINDOWS_DIAGNOSTICS_ROUTES[action];
+        const result = await pythonRequest(endpoint, method, body, timeout, headers);
+        if (result && typeof result.state === 'string') return result;
+    } catch { /* The service may be stopping or temporarily unreachable. */ }
+    return { state: 'unavailable', reason: 'backend_unavailable' };
+}
+
+function windowsAuditConsentLine(eventId, current) {
+    const prefix = eventId + ' başarısızlık denetimi (' + WINDOWS_AUDIT_SUBCATEGORIES[eventId] + ')';
+    if (current === 'enabled') return prefix + ' açık → açık';
+    if (current === 'disabled') return prefix + ' kapalı → oturum boyunca açık';
+    return prefix + ' mevcut değer bilinmiyor → yönetici okumasında kapalı olduğu doğrulanırsa açılır';
+}
+
+async function startWindowsDiagnostics(event) {
+    if (!trustedControlPanelFrame(event) || !mainWindow.isVisible() || app.isQuitting) {
+        return { state: 'unavailable', reason: 'untrusted_frame' };
+    }
+    if (windowsDiagnosticsAction) return { state: 'unavailable', reason: 'busy' };
+    windowsDiagnosticsAction = true;
+    try {
+        const status = await windowsDiagnosticsRequest('status');
+        if (!['idle', 'restored', 'cancelled', 'failed'].includes(status.state)) return status;
+        if (!trustedControlPanelFrame(event) || !mainWindow.isVisible() || app.isQuitting) {
+            return { state: 'cancelled', reason: 'confirmation_cancelled' };
+        }
+        const audit = status.system_audit_failure;
+        const confirmation = await dialog.showMessageBox(mainWindow, {
+            type: 'question',
+            title: 'Windows ağ tanılaması',
+            message: 'Geçici Windows tanılaması başlatılsın mı?',
+            detail: [
+                'Oturum en fazla 5 dakika sürer. Gerektiğinde Windows yönetici onayı ister.',
+                windowsAuditConsentLine('5152', audit?.['5152']),
+                windowsAuditConsentLine('5157', audit?.['5157']),
+                'Geçici ayarlar ancak yönetici her iki önceki değeri okuyabildiğinde uygulanır. Oturum bitince değiştirilen değerler geri yüklenir.',
+                'Gerekirse yönetici yardımıyla yalnız LuxEdge bağlantısıyla eşleşen Security olayları okunur.',
+            ].join('\n\n'),
+            buttons: ['Vazgeç', 'Oturumu başlat'],
+            defaultId: 0,
+            cancelId: 0,
+            noLink: true,
+        });
+        if (confirmation.response !== 1 || !trustedControlPanelFrame(event)
+                || !mainWindow.isVisible() || app.isQuitting) {
+            return { state: 'cancelled', reason: 'confirmation_cancelled' };
+        }
+        windowsDiagnosticsCleanupNeeded = true;
+        return await windowsDiagnosticsRequest('start');
+    } catch {
+        return { state: 'unavailable', reason: 'confirmation_unavailable' };
+    } finally {
+        windowsDiagnosticsAction = false;
+    }
+}
+
+async function stopWindowsDiagnostics(event) {
+    if (!trustedControlPanelFrame(event) || app.isQuitting) {
+        return { state: 'unavailable', reason: 'untrusted_frame' };
+    }
+    if (windowsDiagnosticsAction) return { state: 'unavailable', reason: 'busy' };
+    windowsDiagnosticsAction = true;
+    try {
+        const result = await windowsDiagnosticsRequest('stop');
+        if (result.state === 'restored' || result.state === 'idle') windowsDiagnosticsCleanupNeeded = false;
+        return result;
+    } finally {
+        windowsDiagnosticsAction = false;
+    }
+}
+
+async function stopWindowsDiagnosticsOnExit() {
+    let status = await windowsDiagnosticsRequest('stop', 500);
+    for (let check = 0; check < 3 && status.state === 'stopping'; check++) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        status = await windowsDiagnosticsRequest('status', 500);
+    }
+    if (['idle', 'restored', 'cancelled', 'failed', 'restore_conflict'].includes(status.state)) return;
+    logElectron('WARNING', 'WINDOWS_DIAGNOSTICS_SHUTDOWN',
+        'Windows denetim ayarlarının geri yüklenmesi doğrulanamadı.',
+        'Oturumun geri yükleme durumunu Günlük ekranından kontrol edin.', status.reason || status.state);
+}
+
 function registerIpcHandlers() {
+    ipcMain.handle('get-live-log-file-state', event => trustedControlPanelFrame(event)
+        ? (liveLogFile?.status() || { state: 'idle' }) : { state: 'error', message: 'Günlük isteği doğrulanamadı.' });
+    ipcMain.handle('start-live-log-file', startLiveLogFile);
+    ipcMain.handle('stop-live-log-file', stopLiveLogFile);
+    ipcMain.handle('save-incident-log', saveIncidentLog);
+    ipcMain.handle('windows-diagnostics-status', event => trustedControlPanelFrame(event)
+        ? windowsDiagnosticsRequest('status') : { state: 'unavailable', reason: 'untrusted_frame' });
+    ipcMain.handle('windows-diagnostics-start', startWindowsDiagnostics);
+    ipcMain.handle('windows-diagnostics-stop', stopWindowsDiagnostics);
     ipcMain.handle('refresh-monitors', async () => {
         try { return await pythonPost('/api/monitors/refresh', {}, 5000); }
         catch (error) { return { success: false, message: 'Monitör listesi güncellenemedi.' }; }
@@ -590,6 +816,28 @@ function registerIpcHandlers() {
             electronPersistent: electronLogsReadable && electronLogsWritable,
             logs: logs.slice(-LOG_LIMIT)
         };
+    });
+
+    ipcMain.handle('get-log-archive', async (event, options) => {
+        if (!trustedControlPanelFrame(event)) return { available: false, logs: [], message: 'Günlük isteği doğrulanamadı.' };
+        try { return await logArchive.archivePage(logDirectory(), options || {}); }
+        catch (error) { return { available: false, logs: [], has_more: false, next_cursor: null,
+            message: `Günlük geçmişi açılamadı: ${error.message}` }; }
+    });
+
+    ipcMain.handle('set-log-retention', async (event, options) => {
+        if (!trustedControlPanelFrame(event)) return { success: false, message: 'Günlük ayarı isteği doğrulanamadı.' };
+        const directory = logDirectory();
+        const limit = options?.limit_bytes;
+        const pending = retentionWork.then(() => logArchive.setRetention(directory, limit));
+        retentionWork = pending.catch(() => {});
+        try {
+            await pending;
+            const result = await logArchive.archivePage(directory, { limit: 1 });
+            return { success: true, retention: result.retention };
+        } catch (error) {
+            return { success: false, message: error.message };
+        }
     });
 
     ipcMain.handle('test-wemos-connection', async (event, target) => {

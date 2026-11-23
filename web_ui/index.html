@@ -58,7 +58,7 @@
                 </button>
             </nav>
             <div class="sidebar-footer">
-                <div class="sidebar-version" id="app-version">Sürüm 1.7.3</div>
+                <div class="sidebar-version" id="app-version">Sürüm 1.7.4</div>
             </div>
         </aside>
 
@@ -391,17 +391,71 @@
                     <div class="card-head">
                         <h2>Sistem günlüğü</h2>
                         <div class="row">
-                            <label class="check"><input type="checkbox" id="log-autoscroll" checked><span>Otomatik kaydır</span></label>
-                            <button class="btn btn-ghost btn-sm" onclick="clearLogs()">Görünümü temizle</button>
+                            <label class="check"><input type="checkbox" id="log-autoscroll" onchange="scrollLogsToTail()" checked><span>Otomatik kaydır</span></label>
+                            <button class="btn btn-ghost btn-sm" id="log-clear" onclick="clearLogs()">Görünümü temizle</button>
                             <button class="btn btn-ghost btn-sm" onclick="downloadLogs()">İndir</button>
                         </div>
                     </div>
-                    <div class="log-filters" oninput="renderLogs()">
+                    <details class="windows-diagnostics" open>
+                        <summary>Windows ağ tanılaması</summary>
+                        <p class="hint" id="windows-diagnostics-sources">Windows kaynakları kontrol ediliyor…</p>
+                        <dl class="windows-diagnostics-audit">
+                            <div>
+                                <dt title="0cce9225-69ae-11d9-bed3-505054503030">5152 · Engellenen paketlerin başarısızlık denetimi</dt>
+                                <dd id="windows-audit-5152">Kontrol ediliyor…</dd>
+                            </div>
+                            <div>
+                                <dt title="0cce9226-69ae-11d9-bed3-505054503030">5157 · Engellenen bağlantıların başarısızlık denetimi</dt>
+                                <dd id="windows-audit-5157">Kontrol ediliyor…</dd>
+                            </div>
+                        </dl>
+                        <div class="row windows-diagnostics-actions">
+                            <p class="hint" id="windows-diagnostics-state" role="status">Oturum durumu sorgulanıyor…</p>
+                            <button class="btn btn-ghost btn-sm" id="windows-diagnostics-stop" onclick="changeWindowsDiagnostics('stop')" disabled>Oturumu bitir</button>
+                            <button class="btn btn-ghost btn-sm" id="windows-diagnostics-start" onclick="changeWindowsDiagnostics('start')" disabled>Oturumu başlat</button>
+                        </div>
+                    </details>
+                    <div class="row log-live-file">
+                        <button type="button" class="btn btn-ghost btn-sm" id="log-live-file-start" onclick="changeLiveLogFile('start')">Canlı TXT kaydını başlat</button>
+                        <button type="button" class="btn btn-ghost btn-sm" id="log-live-file-stop" onclick="changeLiveLogFile('stop')" disabled>Kaydı durdur</button>
+                        <p class="hint" id="log-live-file-status" role="status">Canlı TXT kaydı kapalı.</p>
+                        <code class="log-file-path" id="log-live-file-path" hidden></code>
+                    </div>
+                    <div class="row log-archive-toolbar">
+                        <button type="button" class="btn btn-ghost btn-sm" id="log-mode" onclick="toggleLogArchive()">Arşive göz at</button>
+                        <div class="row" id="log-archive-pages" hidden>
+                            <button type="button" class="btn btn-ghost btn-sm" id="log-archive-newer" onclick="showLogArchivePage(-1)">Daha yeni</button>
+                            <button type="button" class="btn btn-ghost btn-sm" id="log-archive-older" onclick="showLogArchivePage(1)">Daha eski</button>
+                        </div>
+                        <p class="hint" id="log-archive-status" role="status"></p>
+                        <details class="log-retention" ontoggle="loadLogRetention(this.open)">
+                            <summary>Disk kullanımı</summary>
+                            <p class="hint" id="log-retention-usage" role="status">Arşiv bilgisi yükleniyor…</p>
+                            <form class="row" onsubmit="saveLogRetention(event)">
+                                <label class="log-range">Saklama sınırı (MiB) <input type="number" class="input" id="log-retention-limit" min="8" max="4096" step="1" value="512" required></label>
+                                <button class="btn btn-ghost btn-sm" id="log-retention-save" type="submit" disabled>Uygula</button>
+                            </form>
+                        </details>
+                    </div>
+                    <fieldset class="log-filters" id="log-filters" oninput="changeLogFilters()" aria-label="Günlük filtreleri">
                         <select id="log-source" class="input" aria-label="Kayıt kaynağı">
                             <option value="">Tüm kaynaklar</option>
                             <option value="pc">PC</option>
                             <option value="wemos">Wemos</option>
+                            <option value="windows">Windows</option>
                             <option value="electron">Uygulama</option>
+                        </select>
+                        <select id="log-stage" class="input" aria-label="İşlem aşaması">
+                            <option value="">Tüm aşamalar</option>
+                            <option value="capture">Ekran yakalama</option>
+                            <option value="color">Renk hesaplama</option>
+                            <option value="frame">Kare işleme</option>
+                            <option value="udp_send">UDP LED gönderimi</option>
+                            <option value="connectivity">Bağlantı yoklaması</option>
+                            <option value="wemos_stream">Wemos LED akışı</option>
+                            <option value="windows_audit">Windows denetimi</option>
+                            <option value="application">Uygulama</option>
+                            <option value="other">Diğer</option>
                         </select>
                         <select id="log-device" class="input" aria-label="Cihaz">
                             <option value="">Tüm cihazlar</option>
@@ -415,6 +469,16 @@
                             <option value="CRITICAL">Kritik</option>
                         </select>
                         <input id="log-search" class="input" type="search" aria-label="Günlükte ara" placeholder="Günlükte ara">
+                        <label class="log-range">Başlangıç <input id="log-from" class="input" type="datetime-local" step="1"></label>
+                        <label class="log-range">Bitiş <input id="log-to" class="input" type="datetime-local" step="1"></label>
+                    </fieldset>
+                    <div class="row log-context" id="log-context" hidden>
+                        <p class="hint" id="log-context-title" role="status"></p>
+                        <button type="button" class="btn btn-ghost btn-sm" id="log-context-more" onclick="loadLogContextPage()" hidden>Daha eski bağlamı yükle</button>
+                        <button type="button" class="btn btn-ghost btn-sm" id="log-incident-export" onclick="exportSelectedLogIncident()">Olay bağlamını TXT kaydet</button>
+                        <button type="button" class="btn btn-ghost btn-sm" id="log-context-close" onclick="closeLogContext()">Filtreli günlüğe dön</button>
+                        <p class="hint log-incident-export-status" id="log-incident-export-status" role="status" hidden></p>
+                        <code class="log-file-path" id="log-incident-export-path" hidden></code>
                     </div>
                     <p id="log-status" class="hint" role="status" hidden></p>
                     <div id="log-entries" class="log-entries">Günlük yükleniyor…</div>
@@ -436,7 +500,7 @@
                     </div>
                     <div class="card">
                         <div class="card-head"><h2>Uygulama</h2></div>
-                        <div class="kv"><span class="kv-label">Arayüz sürümü</span><span class="kv-value">1.7.3</span></div>
+                        <div class="kv"><span class="kv-label">Arayüz sürümü</span><span class="kv-value">1.7.4</span></div>
                         <div class="kv"><span class="kv-label">Arka plan hizmeti</span><span class="kv-value" id="backend-version">-</span></div>
                         <div class="kv"><span class="kv-label">Ayar dosyası</span><span class="kv-value">%APPDATA%\LuxEdge\ambilight_config.json</span></div>
                         <div class="kv"><span class="kv-label">Günlük klasörü</span><span class="kv-value">%APPDATA%\LuxEdge</span></div>
@@ -467,6 +531,7 @@
     <script src="monitors.js"></script>
     <script src="connection.js"></script>
     <script src="overview.js"></script>
+    <script src="log_format.js"></script>
     <script src="app.js"></script>
 </body>
 

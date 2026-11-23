@@ -6,11 +6,13 @@ let electronVisible = true;
 const poller = createPoller(() => !document.hidden && electronVisible);
 const fetchStatus = poller.add('status', fetchStatusData, 1500);
 const fetchLogs = poller.add('logs', fetchLogsData, 2000);
+const fetchLiveLogFile = poller.add('live-log-file', fetchLiveLogFileData, 2000);
+const fetchWindowsDiagnostics = poller.add('windows-diagnostics', fetchWindowsDiagnosticsData, 3000);
 const fetchOverview = poller.add('overview', fetchOverviewData, 1500);
 
 // Firmware sınırı: wemos_code.ino içindeki MAX_LED_COUNT ile aynı olmalı
 const MAX_LED_COUNT = 170;
-const UI_VERSION = '1.7.3';
+const UI_VERSION = '1.7.4';
 
 const STRIP_MODES = ['stream', 'off', 'solid', 'breathe', 'rainbow', 'chase', 'twinkle'];
 const STRIP_MODE_LABELS = {
@@ -31,7 +33,7 @@ const PAGES = {
     ambilight: ['Ambilight', 'Ana Wemos için ekran kenarı LED ayarları'],
     devices: ['Cihazlar', 'Birden fazla Wemos ve şerit bazlı görevler'],
     wemos: ['Wemos', 'Bağlantı, cihaz işlemleri ve firmware'],
-    logs: ['Günlük', 'Arka plan hizmetinin son kayıtları'],
+    logs: ['Günlük', 'PC, Wemos, Windows ve uygulama kayıtları'],
     system: ['Sistem', 'Başlangıç ve uygulama bilgileri'],
 };
 
@@ -81,7 +83,11 @@ function showPage(name) {
     document.querySelectorAll('.page').forEach(page => page.classList.toggle('active', page.dataset.page === name));
     document.getElementById('page-title').textContent = PAGES[name][0];
     document.getElementById('page-subtitle').textContent = PAGES[name][1];
-    if (name === 'logs') fetchLogs();
+    if (name === 'logs') {
+        fetchLogs();
+        fetchLiveLogFile();
+        fetchWindowsDiagnostics();
+    }
     if (name === 'overview') fetchOverview();
     if (name === 'devices') fetchDevices();
     if (name === 'wemos') loadWemosInfo();
@@ -1261,15 +1267,259 @@ async function uploadFirmware() {
     }
 }
 
+// --- Windows ağ tanılaması ---
+const WINDOWS_DIAGNOSTICS_STATES = {
+    idle: 'Oturum kapalı.',
+    starting: 'Oturum hazırlanıyor. Windows gerekirse yönetici onayı isteyecek.',
+    active: 'Oturum açık.',
+    stopping: 'Oturum kapanıyor. Geçici değişiklikler geri yükleniyor…',
+    restored: 'Oturum kapandı. Geçici değişiklikler geri yüklendi.',
+    cancelled: 'Oturum iptal edildi.',
+    failed: 'Oturum başlatılamadı.',
+    restore_conflict: 'Oturum kapandı. Denetim ayarının Windows tarafından değiştirildiği görüldü. Güncel değer korundu.',
+    restore_failed: 'Oturum kapandı. Önceki denetim değerine dönüş doğrulanamadı.',
+    unsupported: 'Windows tanılaması bu ortamda kullanılamıyor.',
+    unavailable: 'Windows tanılamasının durumu alınamadı.',
+};
+const WINDOWS_DIAGNOSTICS_REASONS = {
+    confirmation_cancelled: 'Başlatma onayından vazgeçildi.',
+    confirmation_unavailable: 'Uygulama onay penceresini açamadı.',
+    uac_cancelled: 'Windows yönetici onayı reddedildi veya iptal edildi.',
+    startup_failed: 'Windows tanılama yardımcısı başlatılamadı.',
+    audit_snapshot_failed: 'Yönetici önceki denetim değerlerini okuyamadı. Oturum başlatılamadı.',
+    security_read_unavailable: 'Yönetici Security günlüğüne okuma erişimi sağlayamadı.',
+    policy_busy: 'Başka bir LuxEdge tanılama oturumu denetim ayarlarını kullanıyor.',
+    partial_apply_failed: 'Geçici ayarların tamamı uygulanamadı.',
+    session_expired: 'Beş dakikalık oturum süresi doldu.',
+    backend_exit: 'LuxEdge hizmeti kapandı.',
+    backend_unavailable: 'LuxEdge arka plan hizmetine erişilemiyor.',
+    busy: 'Bir oturum işlemi zaten sürüyor.',
+};
+const WINDOWS_CHANNEL_ACCESS = {
+    readable: 'okunabilir',
+    access_denied: 'okuma izni yok',
+    unavailable: 'kullanılamıyor',
+    disabled: 'kanal kapalı',
+};
+const WINDOWS_AUDIT_VALUES = {
+    enabled: 'Açık',
+    disabled: 'Kapalı',
+    access_denied: 'Bilinmiyor (okuma izni yok)',
+    unavailable: 'Bilinmiyor',
+};
+const WINDOWS_DIAGNOSTICS_CAN_START = ['idle', 'restored', 'cancelled', 'failed'];
+let windowsDiagnosticsStatus;
+let windowsDiagnosticsNotice = '';
+let windowsDiagnosticsPending = false;
+let windowsDiagnosticsRevision = 0;
+
+async function fetchWindowsDiagnosticsData() {
+    if (currentPage !== 'logs' || windowsDiagnosticsPending) return;
+    const revision = windowsDiagnosticsRevision;
+    let status;
+    try {
+        status = await api?.getWindowsDiagnostics?.();
+    } catch { /* Keep periodically checking while this page is visible. */ }
+    if (revision !== windowsDiagnosticsRevision) return;
+    windowsDiagnosticsStatus = status || { state: 'unavailable' };
+    renderWindowsDiagnostics();
+}
+
+function windowsAuditDisplay(status, eventId) {
+    const current = status.system_audit_failure?.[eventId];
+    const currentText = WINDOWS_AUDIT_VALUES[current] || 'Bilinmiyor';
+    const canStart = WINDOWS_DIAGNOSTICS_CAN_START.includes(status.state);
+    const proposal = current === 'enabled' ? 'açık kalacak'
+        : current === 'disabled' ? 'oturum boyunca açılacak'
+            : 'yönetici önceki değeri kapalı olarak doğrularsa açılacak';
+    const currentAndProposal = canStart ? currentText + ' → ' + proposal : currentText;
+    const previous = status.previous_audit_failure?.[eventId];
+    if (!previous) return currentAndProposal;
+    const previousText = WINDOWS_AUDIT_VALUES[previous] || 'Bilinmiyor';
+    const changed = Array.isArray(status.changed_audit_failure) && status.changed_audit_failure.includes(eventId);
+    return ['Önceki: ' + previousText, 'Güncel: ' + currentAndProposal,
+        changed ? 'oturumda geçici olarak açıldı' : ''].filter(Boolean).join(' · ');
+}
+
+function renderWindowsDiagnostics() {
+    const status = windowsDiagnosticsStatus || {};
+    const sources = document.getElementById('windows-diagnostics-sources');
+    const security = WINDOWS_CHANNEL_ACCESS[status.security_channel] || 'durumu bilinmiyor';
+    const defender = WINDOWS_CHANNEL_ACCESS[status.defender_channel] || 'durumu bilinmiyor';
+    sources.textContent = 'Security günlüğü · ' + security
+        + (status.elevated_security_read ? ' · Oturumun yönetici okuması etkin' : '')
+        + ' | Defender Ağ Koruması · ' + defender;
+    for (const eventId of ['5152', '5157']) {
+        document.getElementById('windows-audit-' + eventId).textContent = windowsAuditDisplay(status, eventId);
+    }
+    const state = document.getElementById('windows-diagnostics-state');
+    const remaining = status.state === 'active' && Number.isFinite(status.remaining_seconds)
+        ? 'Kalan süre ' + Math.max(0, Math.ceil(status.remaining_seconds)) + ' sn.' : '';
+    const message = [WINDOWS_DIAGNOSTICS_STATES[status.state], remaining,
+        WINDOWS_DIAGNOSTICS_REASONS[status.reason], windowsDiagnosticsNotice].filter(Boolean).join(' ');
+    if (state.textContent !== message) state.textContent = message;
+    document.getElementById('windows-diagnostics-start').disabled = windowsDiagnosticsPending
+        || !WINDOWS_DIAGNOSTICS_CAN_START.includes(status.state);
+    document.getElementById('windows-diagnostics-stop').disabled = windowsDiagnosticsPending
+        || !['starting', 'active'].includes(status.state);
+}
+
+async function changeWindowsDiagnostics(action) {
+    if (windowsDiagnosticsPending || !api || !['start', 'stop'].includes(action)) return;
+    windowsDiagnosticsRevision++;
+    windowsDiagnosticsPending = true;
+    windowsDiagnosticsNotice = '';
+    renderWindowsDiagnostics();
+    try {
+        const next = action === 'start' ? await api.startWindowsDiagnostics() : await api.stopWindowsDiagnostics();
+        if (next.reason === 'confirmation_cancelled' || next.state === 'unavailable') {
+            windowsDiagnosticsNotice = WINDOWS_DIAGNOSTICS_REASONS[next.reason] || WINDOWS_DIAGNOSTICS_STATES.unavailable;
+        } else {
+            windowsDiagnosticsStatus = next;
+        }
+    } catch {
+        windowsDiagnosticsNotice = WINDOWS_DIAGNOSTICS_STATES.unavailable;
+    } finally {
+        windowsDiagnosticsPending = false;
+        renderWindowsDiagnostics();
+    }
+}
+
+// --- Günlük dosyaları ---
+const LOG_FILE_MESSAGES = {
+    idle: 'Canlı TXT kaydı kapalı.',
+    writing: 'Yeni günlük kayıtları TXT dosyasına yazılıyor.',
+    stopped: 'Canlı TXT kaydı durduruldu.',
+    cancelled: 'Dosya seçimi iptal edildi.',
+    error: 'Canlı TXT dosyasına yazılamadı.',
+};
+let liveLogFileStatus = { state: 'idle' };
+let liveLogFileNotice = '';
+let liveLogFilePending = false;
+let liveLogFileStateUnavailable = false;
+let liveLogFileRevision = 0;
+let incidentLogExport = null;
+
+async function fetchLiveLogFileData() {
+    if (currentPage !== 'logs' || liveLogFilePending || !api.getLiveLogFileState) return;
+    const revision = liveLogFileRevision;
+    try {
+        const result = await api.getLiveLogFileState();
+        if (revision !== liveLogFileRevision || !result?.state) return;
+        liveLogFileStatus = result;
+        liveLogFileStateUnavailable = false;
+        renderLiveLogFile();
+    } catch {
+        if (revision !== liveLogFileRevision) return;
+        liveLogFileStateUnavailable = true;
+        renderLiveLogFile();
+    }
+}
+
+function renderLiveLogFile() {
+    const status = document.getElementById('log-live-file-status');
+    const path = document.getElementById('log-live-file-path');
+    const writing = liveLogFileStatus.state === 'writing';
+    const count = Number.isSafeInteger(liveLogFileStatus.written) ? liveLogFileStatus.written : 0;
+    const summary = liveLogFilePending ? 'Canlı TXT kayıt işlemi sürüyor…' : [
+        liveLogFileNotice || LOG_FILE_MESSAGES[liveLogFileStatus.state],
+        liveLogFileStateUnavailable ? 'Canlı kayıt durumu alınamadı.' : '',
+        count > 0 ? count.toLocaleString('tr-TR') + ' kayıt' : '',
+        liveLogFileStatus.message,
+    ].filter(Boolean).join(' · ');
+    if (status.textContent !== summary) status.textContent = summary;
+    const target = liveLogFileStatus.path || '';
+    if (path.textContent !== target) path.textContent = target;
+    path.hidden = !target;
+    document.getElementById('log-live-file-start').disabled = liveLogFilePending || writing || !api.startLiveLogFile;
+    document.getElementById('log-live-file-stop').disabled = liveLogFilePending || !writing;
+}
+
+async function changeLiveLogFile(action) {
+    if (liveLogFilePending || !['start', 'stop'].includes(action)) return;
+    liveLogFileRevision++;
+    liveLogFilePending = true;
+    liveLogFileNotice = '';
+    renderLiveLogFile();
+    try {
+        const result = action === 'start' ? await api.startLiveLogFile() : await api.stopLiveLogFile();
+        if (!result?.state) throw new Error('live-log-file');
+        liveLogFileStateUnavailable = false;
+        if (result.state === 'cancelled') liveLogFileNotice = LOG_FILE_MESSAGES.cancelled;
+        else liveLogFileStatus = result;
+    } catch {
+        liveLogFileNotice = 'Canlı TXT kayıt işlemi tamamlanamadı.';
+    } finally {
+        liveLogFilePending = false;
+        renderLiveLogFile();
+    }
+}
+
+function renderIncidentLogExport() {
+    const button = document.getElementById('log-incident-export');
+    const status = document.getElementById('log-incident-export-status');
+    const path = document.getElementById('log-incident-export-path');
+    const sameIncident = selectedLogIncident && incidentLogExport?.key === String(logKey(selectedLogIncident));
+    const result = sameIncident ? incidentLogExport.result : null;
+    const saved = result?.state === 'saved' || result?.state === 'stopped';
+    let message = '';
+    if (sameIncident && incidentLogExport.pending) message = 'Olay aralığındaki arşiv kayıtları hazırlanıyor…';
+    else if (saved) message = 'Olay bağlamı TXT dosyasına kaydedildi.'
+        + (Number.isSafeInteger(result.written) ? ' ' + result.written.toLocaleString('tr-TR') + ' kayıt.' : '');
+    else if (result?.state === 'cancelled') message = 'Olay dosyası kaydedilmedi. Dosya seçimi iptal edildi.';
+    else if (result) message = result.message || 'Olay bağlamı kaydedilemedi.';
+    if (status.textContent !== message) status.textContent = message;
+    status.hidden = !message;
+    const target = result?.path || '';
+    if (path.textContent !== target) path.textContent = target;
+    path.hidden = !target;
+    button.disabled = Boolean(incidentLogExport?.pending) || !api.saveIncidentLog;
+}
+
+async function exportSelectedLogIncident() {
+    if (!selectedLogIncident || incidentLogExport?.pending || !api.saveIncidentLog) return;
+    const at = logEventTime(selectedLogIncident);
+    if (!Number.isFinite(at)) return;
+    const operation = { key: String(logKey(selectedLogIncident)), pending: true, result: null };
+    incidentLogExport = operation;
+    renderIncidentLogExport();
+    try {
+        const result = await api.saveIncidentLog({
+            from: at - LOG_CONTEXT_MS, to: at + LOG_CONTEXT_MS, selectedKey: operation.key,
+        });
+        operation.result = result || { state: 'error' };
+    } catch {
+        operation.result = { state: 'error' };
+    } finally {
+        operation.pending = false;
+        renderIncidentLogExport();
+    }
+}
+
 // --- Günlük ---
-const LOG_SOURCES = { pc: 'PC', wemos: 'Wemos', electron: 'Uygulama' };
-const LOG_LEVELS = { DEBUG: 'Hata ayıklama', INFO: 'Bilgi', WARNING: 'Uyarı', ERROR: 'Hata', CRITICAL: 'Kritik' };
-const logTimeFormat = new Intl.DateTimeFormat('tr-TR', { dateStyle: 'short', timeStyle: 'medium' });
+const {
+    sources: LOG_SOURCES, levels: LOG_LEVELS, stages: LOG_STAGES, eventTime: logEventTime,
+    rowTime: logTime, stage: logStage, detailsText: logDetails, timingLines: logTimingLines,
+    causes: logCauses, formatEntry: formatLogEntry, formatLocalTime,
+} = LogFormat;
+const LOG_CONTEXT_MS = 30_000;
+const LOG_ARCHIVE_PAGE_SIZE = 100;
+const LOG_ARCHIVE_SCAN_PAGES = 4;
+const LOG_MIB = 1024 * 1024;
 const logDurationFormat = new Intl.NumberFormat('tr-TR', { maximumFractionDigits: 3 });
 let logCache = [];
 let clearedLogId = null;
 let clearedLogTime = 0;
 let visibleLogs = [];
+let selectedLogIncident = null;
+let timelineScrollTop = 0;
+const logRows = new Map();
+let logHistory = null;
+let logIncidentArchive = null;
+let logHistoryFilterTimer;
+let logRetention = null;
+let logRetentionPending = false;
+let logRetentionNotice = '';
 
 function logKey(entry) {
     return entry.id ?? JSON.stringify([entry.time, entry.level, entry.msg]);
@@ -1279,10 +1529,6 @@ function logTimestamp(entry) {
     return Date.parse(entry.timestamp) || 0;
 }
 
-function logTime(entry) {
-    return logTimestamp(entry) ? logTimeFormat.format(logTimestamp(entry)) : (entry.time || '');
-}
-
 function showLogStatus(message) {
     const status = document.getElementById('log-status');
     if (status.textContent !== message) status.textContent = message;
@@ -1290,9 +1536,10 @@ function showLogStatus(message) {
 }
 
 async function fetchLogsData() {
-    if (currentPage !== 'logs') return;
+    if (currentPage !== 'logs' || logHistory) return;
     try {
         const data = await api.getLogs();
+        if (currentPage !== 'logs' || logHistory) return;
         const offline = data.available === false;
         const warnings = [];
         if (offline) warnings.push('PC hizmetine erişilemiyor. Elde bulunan kayıtlar gösteriliyor.');
@@ -1308,39 +1555,16 @@ async function fetchLogsData() {
             renderLogs();
         }
     } catch {
+        if (currentPage !== 'logs' || logHistory) return;
         showLogStatus('Günlük alınamadı. Elde bulunan kayıtlar gösteriliyor.');
         renderLogs();
     }
 }
 
-function logDevice(entry) {
-    return entry.device_id == null && !entry.device_name ? '' : String(entry.device_id ?? entry.device_name);
-}
-
-function logDetails(entry) {
-    if (typeof entry.details === 'string') return entry.details;
-    return entry.details && Object.keys(entry.details).length ? JSON.stringify(entry.details, null, 2) : '';
-}
-
-function logTimingLines(entry) {
-    const details = entry.details;
-    if (!details || typeof details !== 'object') return [];
-    const lines = [];
-    const estimated = Date.parse(details.event_timestamp_estimated);
-    const received = Date.parse(details.received_at);
-    if (Number.isFinite(estimated)) lines.push('Tahmini olay zamanı · ' + logTimeFormat.format(estimated));
-    if (Number.isFinite(received)) lines.push('Alınma zamanı · ' + logTimeFormat.format(received));
-    if (Number.isFinite(details.outage_ms) && details.outage_ms >= 0) {
-        lines.push('Bağlantı kesintisi · ' + logDurationFormat.format(details.outage_ms / 1000) + ' sn');
-    }
-    return lines;
-}
-
-function logCauses(entry) {
-    if (Array.isArray(entry.possible_causes) && entry.possible_causes.length) {
-        return entry.possible_causes;
-    }
-    return ['WARNING', 'ERROR', 'CRITICAL'].includes(entry.level) ? ['Nedeni belirlenemedi.'] : [];
+function logDevice(entry, devicesByIp) {
+    if (entry.device_id != null) return String(entry.device_id);
+    const ip = entry.details?.ip;
+    return (ip && devicesByIp?.get(ip)) || (entry.device_name ? String(entry.device_name) : (ip ? 'ip:' + ip : ''));
 }
 
 function isAfterLogClear(entry) {
@@ -1349,98 +1573,433 @@ function isAfterLogClear(entry) {
     return logTimestamp(entry) > clearedLogTime;
 }
 
+function logDeviceOptions(entries, select) {
+    const devicesByIp = new Map();
+    const devices = new Map();
+    for (const entry of entries) {
+        const ip = entry.details?.ip;
+        if (!ip || entry.device_id == null) continue;
+        const id = String(entry.device_id);
+        devicesByIp.set(ip, !devicesByIp.has(ip) || devicesByIp.get(ip) === id ? id : null);
+    }
+    for (const entry of entries) {
+        const key = logDevice(entry, devicesByIp);
+        if (key && (entry.device_name || !devices.has(key))) {
+            devices.set(key, entry.device_name ? String(entry.device_name) : (key.startsWith('ip:') ? key.slice(3) : key));
+        }
+    }
+    const options = [['', 'Tüm cihazlar'], ...devices];
+    if (select && (select.options.length !== options.length || options.some(([id, name], index) =>
+        select.options[index].value !== id || select.options[index].text !== name))) {
+        const selected = select.value;
+        select.replaceChildren(...options.map(([id, name]) => new Option(name, id)));
+        if (devices.has(selected)) select.value = selected;
+    }
+    return { devices, devicesByIp };
+}
+
+function readLogFilters() {
+    const value = field => document.getElementById('log-' + field).value;
+    return {
+        from: new Date(value('from')).getTime(), to: new Date(value('to')).getTime() + 999,
+        source: value('source'), device: value('device'), level: value('level'), stage: value('stage'),
+        search: value('search').trim().toLocaleLowerCase('tr-TR'),
+    };
+}
+
+function mergeLogEntries(...groups) {
+    return [...new Map(groups.flat().map(entry => [logKey(entry), entry])).values()];
+}
+
+function rememberArchiveDevices(history, entries) {
+    for (const entry of entries) {
+        const ip = entry.details?.ip;
+        if (entry.device_id == null && !entry.device_name && !ip) continue;
+        const key = JSON.stringify([entry.device_id, entry.device_name, ip]);
+        history.devices.set(key, { device_id: entry.device_id, device_name: entry.device_name, details: { ip } });
+        if (history.devices.size > 512) history.devices.delete(history.devices.keys().next().value);
+    }
+}
+
+function filterLogs(entries, filters, devicesByIp) {
+    return entries.filter(entry => {
+        const time = logEventTime(entry);
+        if ((Number.isFinite(filters.from) && (time === null || time < filters.from))
+                || (Number.isFinite(filters.to) && (time === null || time > filters.to))) return false;
+        if (filters.source && filters.source !== (entry.source || 'pc')) return false;
+        if (filters.device && filters.device !== logDevice(entry, devicesByIp)) return false;
+        if (filters.level && filters.level !== entry.level) return false;
+        if (filters.stage && filters.stage !== logStage(entry)) return false;
+        return !filters.search || [entry.msg, entry.explanation, entry.code, entry.device_name, entry.device_id,
+            LOG_STAGES[logStage(entry)], logDetails(entry), ...logTimingLines(entry), ...logCauses(entry)]
+            .join(' ').toLocaleLowerCase('tr-TR').includes(filters.search);
+    });
+}
+
+function toggleLogArchive() {
+    clearTimeout(logHistoryFilterTimer);
+    selectedLogIncident = null;
+    logIncidentArchive = null;
+    showLogStatus('');
+    if (logHistory) {
+        logHistory = null;
+        renderLogs();
+        scrollLogsToTail();
+        void fetchLogs();
+        return;
+    }
+    logHistory = { offsets: [null], next: null, page: 0, logs: [], devices: new Map(), request: 0, pending: false, message: '' };
+    rememberArchiveDevices(logHistory, logCache.concat(deviceRecords.map(device => ({
+        device_id: device.id, device_name: device.name, details: { ip: device.ip },
+    }))));
+    void loadLogArchivePage(0);
+}
+
+function changeLogFilters() {
+    if (!logHistory) {
+        renderLogs();
+        return;
+    }
+    clearTimeout(logHistoryFilterTimer);
+    logHistory.request++;
+    logHistory.pending = true;
+    logHistory.offsets = [null];
+    logHistory.next = null;
+    logHistory.page = 0;
+    logHistory.logs = [];
+    logHistory.message = 'Arşiv filtreleniyor…';
+    renderLogs();
+    logHistoryFilterTimer = setTimeout(() => void loadLogArchivePage(0), 250);
+}
+
+function showLogArchivePage(direction) {
+    if (!logHistory || logHistory.pending || selectedLogIncident) return;
+    const page = logHistory.page + direction;
+    if (page < 0 || direction > 0 && !logHistory.next) return;
+    if (direction > 0) logHistory.offsets[page] = logHistory.next;
+    void loadLogArchivePage(page);
+}
+
+async function loadLogArchivePage(page) {
+    const history = logHistory;
+    if (!history) return;
+    const filters = readLogFilters();
+    let before = history.offsets[page];
+    if (filters.from > filters.to) {
+        history.message = '';
+        history.pending = false;
+        renderLogs();
+        return;
+    }
+    const request = ++history.request;
+    history.pending = true;
+    history.message = 'Arşiv okunuyor…';
+    renderLogs();
+    try {
+        for (let scan = 0; scan < LOG_ARCHIVE_SCAN_PAGES; scan++) {
+            const response = await api.getLogArchive({
+                limit: LOG_ARCHIVE_PAGE_SIZE, before: before ?? undefined,
+                from: Number.isFinite(filters.from) ? filters.from : undefined,
+                to: Number.isFinite(filters.to) ? filters.to : undefined,
+                source: filters.source, level: filters.level,
+            });
+            if (logHistory !== history || history.request !== request) return;
+            if (response?.available === false || !Array.isArray(response?.logs)) throw new Error('archive');
+            updateLogRetention(response.retention);
+            rememberArchiveDevices(history, response.logs);
+            const { devicesByIp } = logDeviceOptions([...history.devices.values()]);
+            const rows = filterLogs(response.logs, filters, devicesByIp);
+            const next = response.has_more && response.next_cursor !== before ? response.next_cursor : null;
+            history.page = page;
+            history.logs = response.logs;
+            history.next = next;
+            history.message = rows.length ? 'Arşiv · Sayfa ' + (page + 1)
+                : next ? 'Bu aralıkta filtreye uyan kayıt yok. Daha eski kayıtları inceleyebilirsiniz.'
+                    : 'Filtreye uyan başka arşiv kaydı yok.';
+            if (rows.length || !next) break;
+            before = next;
+        }
+    } catch {
+        if (logHistory === history && history.request === request) {
+            history.message = 'Arşiv okunamadı. Yeniden denemek için arşivi tekrar açın.';
+        }
+    } finally {
+        if (logHistory === history && history.request === request) {
+            history.pending = false;
+            renderLogs();
+            const container = document.getElementById('log-entries');
+            container.scrollTop = container.scrollHeight;
+        }
+    }
+}
+
+function updateLogRetention(retention) {
+    if (!retention || !Number.isFinite(retention.limit_bytes)) return;
+    const input = document.getElementById('log-retention-limit');
+    if (!logRetention || (retention.limit_bytes !== logRetention.limit_bytes && document.activeElement !== input)) {
+        input.value = String(retention.limit_bytes / LOG_MIB);
+    }
+    logRetention = retention;
+    renderLogRetention();
+}
+
+function renderLogRetention() {
+    const usage = document.getElementById('log-retention-usage');
+    const oldest = Date.parse(logRetention?.oldest_timestamp);
+    const mib = bytes => logDurationFormat.format(bytes / LOG_MIB) + ' MiB';
+    const values = logRetention ? [
+        mib(logRetention.used_bytes) + ' / ' + mib(logRetention.limit_bytes),
+        'En eski kayıt ' + (Number.isFinite(oldest) ? formatLocalTime(oldest) : 'yok'),
+        logRetention.legacy_used_bytes > 0 ? 'Eski TXT günlükleri ' + mib(logRetention.legacy_used_bytes) : '',
+    ] : ['Arşiv bilgisi bekleniyor…'];
+    usage.textContent = [...values, logRetentionNotice].filter(Boolean).join(' · ');
+    document.getElementById('log-retention-save').disabled = !logRetention || logRetentionPending;
+}
+
+async function loadLogRetention(open) {
+    if (!open || logRetentionPending || logHistory?.pending) return;
+    logRetentionPending = true;
+    logRetentionNotice = '';
+    renderLogRetention();
+    try {
+        const result = await api.getLogArchive({ limit: 1 });
+        if (!result.retention) throw new Error('retention');
+        updateLogRetention(result.retention);
+    } catch {
+        logRetentionNotice = 'Disk kullanımı sorgulanamadı.';
+    } finally {
+        logRetentionPending = false;
+        renderLogRetention();
+    }
+}
+
+async function saveLogRetention(event) {
+    event.preventDefault();
+    if (!logRetention || logRetentionPending) return;
+    const input = document.getElementById('log-retention-limit');
+    if (!input.reportValidity()) return;
+    const limit = input.valueAsNumber * LOG_MIB;
+    if (!Number.isSafeInteger(limit) || limit === logRetention.limit_bytes) return;
+    logRetentionPending = true;
+    logRetentionNotice = '';
+    renderLogRetention();
+    try {
+        if (limit < logRetention.limit_bytes && !await confirmDialog('Günlük saklama sınırını düşür',
+            'Yeni sınıra ulaşmak için en eski arşiv kayıtları kalıcı olarak silinebilir.',
+            { confirmLabel: 'Sınırı düşür', danger: true })) return;
+        const result = await api.setLogRetention({ limit_bytes: limit });
+        if (!result.success || !result.retention) throw new Error('retention');
+        updateLogRetention(result.retention);
+        logRetentionNotice = 'Saklama sınırı kaydedildi.';
+        if (logHistory && !selectedLogIncident) changeLogFilters();
+    } catch {
+        logRetentionNotice = 'Saklama sınırı kaydedilemedi.';
+    } finally {
+        logRetentionPending = false;
+        renderLogRetention();
+    }
+}
+
+async function loadLogContextPage() {
+    const context = logIncidentArchive;
+    if (!context || context.pending) return;
+    const at = logEventTime(context.anchor);
+    context.pending = true;
+    context.error = false;
+    renderLogs();
+    try {
+        const response = await api.getLogArchive({
+            limit: 200, before: context.next ?? undefined, from: at - LOG_CONTEXT_MS, to: at + LOG_CONTEXT_MS,
+        });
+        if (logIncidentArchive !== context) return;
+        if (response?.available === false || !Array.isArray(response?.logs)) throw new Error('archive');
+        updateLogRetention(response.retention);
+        context.entries = mergeLogEntries(context.entries, response.logs);
+        context.next = response.has_more && response.next_cursor !== context.next ? response.next_cursor : null;
+    } catch {
+        if (logIncidentArchive === context) context.error = true;
+    } finally {
+        if (logIncidentArchive === context) {
+            context.pending = false;
+            renderLogs();
+        }
+    }
+}
+
+function selectLogIncident(entry) {
+    if (logEventTime(entry) === null) return;
+    if (!selectedLogIncident) timelineScrollTop = document.getElementById('log-entries').scrollTop;
+    selectedLogIncident = entry;
+    logIncidentArchive = { anchor: entry, entries: [], next: null, pending: false, error: false };
+    renderLogs();
+    const row = logRows.get(logKey(entry))?.row;
+    if (row) {
+        row.open = true;
+        row.scrollIntoView({ block: 'nearest' });
+    }
+    document.getElementById('log-context-close').focus();
+    void loadLogContextPage();
+}
+
+function closeLogContext() {
+    if (!selectedLogIncident) return;
+    const key = logKey(selectedLogIncident);
+    selectedLogIncident = null;
+    logIncidentArchive = null;
+    renderLogs();
+    document.getElementById('log-entries').scrollTop = timelineScrollTop;
+    const row = logRows.get(key)?.row;
+    if (row?.isConnected) row.firstElementChild.focus({ preventScroll: true });
+}
+
+function scrollLogsToTail() {
+    if (selectedLogIncident || logHistory || !document.getElementById('log-autoscroll').checked) return;
+    const container = document.getElementById('log-entries');
+    container.scrollTop = container.scrollHeight;
+}
+
+function createLogRow(entry, deviceName, previous) {
+    const row = document.createElement('details');
+    row.className = 'log-entry';
+    row.open = previous?.open || false;
+    const summary = document.createElement('summary');
+    const safeLevel = Object.hasOwn(LOG_LEVELS, entry.level) ? entry.level : '';
+    const sourceName = LOG_SOURCES[entry.source] || LOG_SOURCES.pc;
+    const parts = {
+        'log-time': logTime(entry),
+        ['log-level ' + safeLevel]: LOG_LEVELS[entry.level] || entry.level,
+        'log-source': deviceName ? sourceName + ' · ' + deviceName : sourceName,
+        'log-stage': LOG_STAGES[logStage(entry)],
+        'log-msg': entry.msg + (entry.count > 1 ? ' (×' + entry.count + ')' : '')
+    };
+    for (const [className, value] of Object.entries(parts)) {
+        const span = document.createElement('span');
+        span.className = className;
+        span.textContent = value;
+        summary.appendChild(span);
+    }
+    const detail = document.createElement('div');
+    detail.className = 'log-detail';
+    const causes = logCauses(entry);
+    const lines = [entry.explanation || entry.msg,
+        causes.length ? 'Olası nedenler · ' + causes.join(' · ') : '', ...logTimingLines(entry)];
+    for (const text of lines.filter(Boolean)) {
+        const line = document.createElement('p');
+        line.textContent = text;
+        detail.appendChild(line);
+    }
+    if (logEventTime(entry) !== null) {
+        const context = document.createElement('button');
+        context.type = 'button';
+        context.className = 'btn btn-ghost btn-sm';
+        context.textContent = 'Olayın 30 sn öncesi ve sonrası';
+        context.addEventListener('click', () => selectLogIncident(entry));
+        detail.appendChild(context);
+    }
+    const technical = [entry.code, logDetails(entry)].filter(Boolean).join('\n');
+    if (technical) {
+        const disclosure = document.createElement('details');
+        disclosure.open = previous?.querySelector('.log-detail details')?.open || false;
+        const label = document.createElement('summary');
+        label.textContent = 'Teknik ayrıntılar';
+        const raw = document.createElement('pre');
+        raw.textContent = technical;
+        disclosure.append(label, raw);
+        detail.appendChild(disclosure);
+    }
+    row.append(summary, detail);
+    return row;
+}
+
 function renderLogs() {
     const container = document.getElementById('log-entries');
-    const device = document.getElementById('log-device');
-    const selectedDevice = device.value;
-    const allLogs = logCache.filter(isAfterLogClear);
-    const devices = new Map();
-    for (const entry of allLogs) {
-        const key = logDevice(entry);
-        if (key) devices.set(key, entry.device_name || key);
+    const page = logHistory?.logs || logCache.filter(isAfterLogClear);
+    const diskContext = logIncidentArchive?.entries || [];
+    const allLogs = mergeLogEntries(logHistory ? diskContext : diskContext.filter(isAfterLogClear), page);
+    const knownDevices = logHistory ? [...logHistory.devices.values(), ...allLogs] : allLogs;
+    const { devices, devicesByIp } = logDeviceOptions(knownDevices, document.getElementById('log-device'));
+    const logFilters = readLogFilters();
+    const incidentKey = selectedLogIncident ? logKey(selectedLogIncident) : null;
+    const filters = document.getElementById('log-filters');
+    const context = document.getElementById('log-context');
+    const archivePages = document.getElementById('log-archive-pages');
+    const archiveStatus = document.getElementById('log-archive-status');
+    const historyMessage = logHistory && !selectedLogIncident ? logHistory.message : '';
+    document.getElementById('log-mode').textContent = logHistory ? 'Canlı günlüğe dön' : 'Arşive göz at';
+    document.getElementById('log-clear').disabled = Boolean(logHistory);
+    document.getElementById('log-autoscroll').disabled = Boolean(logHistory || selectedLogIncident);
+    archivePages.hidden = !logHistory || Boolean(selectedLogIncident);
+    document.getElementById('log-archive-newer').disabled = !logHistory?.page || logHistory.pending;
+    document.getElementById('log-archive-older').disabled = !logHistory?.next || logHistory.pending;
+    if (archiveStatus.textContent !== historyMessage) archiveStatus.textContent = historyMessage;
+    filters.disabled = Boolean(selectedLogIncident);
+    context.hidden = !selectedLogIncident;
+    if (selectedLogIncident) renderIncidentLogExport();
+    if (selectedLogIncident) {
+        const at = logEventTime(selectedLogIncident);
+        const contextStatus = logIncidentArchive?.pending ? ' · Arşiv okunuyor…'
+            : logIncidentArchive?.error ? ' · Arşiv eşleşmeleri alınamadı.' : '';
+        const title = 'Olay bağlamı ±30 sn · ' + logTime(selectedLogIncident) + ' · ' + selectedLogIncident.msg + contextStatus;
+        const contextTitle = document.getElementById('log-context-title');
+        const more = document.getElementById('log-context-more');
+        more.hidden = !logIncidentArchive?.next && !logIncidentArchive?.error;
+        more.disabled = Boolean(logIncidentArchive?.pending);
+        more.textContent = logIncidentArchive?.error ? 'Arşivi yeniden dene' : 'Daha eski bağlamı yükle';
+        if (contextTitle.textContent !== title) contextTitle.textContent = title;
+        visibleLogs = allLogs.filter(entry => {
+            const time = logEventTime(entry);
+            return time !== null && Math.abs(time - at) <= LOG_CONTEXT_MS;
+        });
+        if (!visibleLogs.some(entry => logKey(entry) === incidentKey)) visibleLogs.push(selectedLogIncident);
+    } else {
+        visibleLogs = filterLogs(page, logFilters, devicesByIp);
     }
-    device.replaceChildren(new Option('Tüm cihazlar', ''));
-    for (const [id, name] of devices) device.add(new Option(name, id));
-    device.value = devices.has(selectedDevice) ? selectedDevice : '';
-
-    const source = document.getElementById('log-source').value;
-    const level = document.getElementById('log-level').value;
-    const search = document.getElementById('log-search').value.trim().toLocaleLowerCase('tr-TR');
-    visibleLogs = allLogs.filter(entry => {
-        if (source && source !== (entry.source || 'pc')) return false;
-        if (device.value && device.value !== logDevice(entry)) return false;
-        if (level && level !== entry.level) return false;
-        if (!search) return true;
-        return [entry.msg, entry.explanation, entry.code, entry.device_name, entry.device_id, logDetails(entry), ...logTimingLines(entry), ...logCauses(entry)]
-            .join(' ').toLocaleLowerCase('tr-TR').includes(search);
+    visibleLogs.sort((a, b) => (logEventTime(a) ?? 0) - (logEventTime(b) ?? 0) || logTimestamp(a) - logTimestamp(b));
+    const followsTail = !logHistory && !selectedLogIncident && document.getElementById('log-autoscroll').checked
+        && (container.children.length === 0 || container.scrollHeight - container.scrollTop - container.clientHeight <= 8)
+        && !container.querySelector('.log-entry[open]');
+    const retained = new Set(allLogs.map(logKey));
+    if (selectedLogIncident) retained.add(incidentKey);
+    const rows = visibleLogs.map(entry => {
+        const key = logKey(entry);
+        const deviceName = devices.get(logDevice(entry, devicesByIp)) || entry.device_name || entry.device_id;
+        const revision = JSON.stringify([entry, deviceName]);
+        let cached = logRows.get(key);
+        if (cached?.revision !== revision) {
+            cached = { revision, row: createLogRow(entry, deviceName, cached?.row) };
+            logRows.set(key, cached);
+        }
+        const row = cached.row;
+        row.classList.toggle('log-incident', Boolean(selectedLogIncident) && key === incidentKey);
+        return row;
     });
-
-    const open = new Set([...container.querySelectorAll('details[data-log-id][open]')].map(row => row.dataset.logId));
-    const scrollTop = container.scrollTop;
-    const rows = document.createDocumentFragment();
-    for (const entry of visibleLogs) {
-        const row = document.createElement('details');
-        row.className = 'log-entry';
-        row.dataset.logId = logKey(entry);
-        row.open = open.has(row.dataset.logId);
-        const summary = document.createElement('summary');
-        const safeLevel = Object.hasOwn(LOG_LEVELS, entry.level) ? entry.level : '';
-        const sourceName = LOG_SOURCES[entry.source] || LOG_SOURCES.pc;
-        const deviceName = entry.device_name || entry.device_id;
-        const parts = {
-            'log-time': logTime(entry),
-            ['log-level ' + safeLevel]: LOG_LEVELS[safeLevel] || entry.level,
-            'log-source': deviceName ? sourceName + ' · ' + deviceName : sourceName,
-            'log-msg': entry.msg + (entry.count > 1 ? ' (×' + entry.count + ')' : '')
-        };
-        for (const [className, value] of Object.entries(parts)) {
-            const span = document.createElement('span');
-            span.className = className;
-            span.textContent = value;
-            summary.appendChild(span);
-        }
-        const detail = document.createElement('div');
-        detail.className = 'log-detail';
-        const description = document.createElement('p');
-        description.textContent = entry.explanation || entry.msg;
-        detail.appendChild(description);
-        const causes = logCauses(entry);
-        if (causes.length) {
-            const cause = document.createElement('p');
-            cause.textContent = 'Olası nedenler · ' + causes.join(' · ');
-            detail.appendChild(cause);
-        }
-        for (const line of logTimingLines(entry)) {
-            const timing = document.createElement('p');
-            timing.textContent = line;
-            detail.appendChild(timing);
-        }
-        const technical = [entry.code, logDetails(entry)].filter(Boolean).join('\n');
-        if (technical) {
-            const disclosure = document.createElement('details');
-            disclosure.dataset.logId = row.dataset.logId + ':details';
-            disclosure.open = open.has(disclosure.dataset.logId);
-            const label = document.createElement('summary');
-            label.textContent = 'Teknik ayrıntılar';
-            const raw = document.createElement('pre');
-            raw.textContent = technical;
-            disclosure.append(label, raw);
-            detail.appendChild(disclosure);
-        }
-        row.append(summary, detail);
-        rows.appendChild(row);
+    const desired = new Set(rows);
+    for (const row of Array.from(container.childNodes)) {
+        if (!desired.has(row)) row.remove();
     }
-    if (!visibleLogs.length) {
+    let position = container.firstElementChild;
+    for (const row of rows) {
+        if (row === position) position = position.nextElementSibling;
+        else container.insertBefore(row, position);
+    }
+    for (const key of logRows.keys()) {
+        if (!retained.has(key)) logRows.delete(key);
+    }
+    if (visibleLogs.length === 0) {
         const empty = document.createElement('p');
         empty.className = 'list-empty';
-        empty.textContent = allLogs.length ? 'Filtrelere uyan kayıt yok.' : 'Gösterilecek kayıt yok.';
-        rows.appendChild(empty);
+        empty.textContent = logFilters.from > logFilters.to ? 'Başlangıç zamanı bitişten sonra olamaz.'
+            : logHistory?.pending ? 'Arşiv okunuyor…'
+                : page.length ? 'Filtrelere uyan kayıt yok.' : 'Gösterilecek kayıt yok.';
+        container.appendChild(empty);
     }
-    container.replaceChildren(rows);
-    container.scrollTop = document.getElementById('log-autoscroll').checked && !open.size ? container.scrollHeight : scrollTop;
+    if (followsTail) container.scrollTop = container.scrollHeight;
 }
 
 function clearLogs() {
+    if (logHistory) return;
+    selectedLogIncident = null;
+    logIncidentArchive = null;
     clearedLogTime = Date.now();
     for (const entry of logCache) {
         if (Number.isSafeInteger(entry.id)) clearedLogId = Math.max(clearedLogId ?? 0, entry.id);
@@ -1449,19 +2008,7 @@ function clearLogs() {
 }
 
 function downloadLogs() {
-    const lines = visibleLogs.map(entry => {
-        const source = LOG_SOURCES[entry.source] || LOG_SOURCES.pc;
-        const device = entry.device_name || entry.device_id;
-        return [
-            [logTime(entry), LOG_LEVELS[entry.level] || entry.level, source, device, entry.msg].filter(Boolean).join(' | '),
-            entry.count > 1 ? 'Tekrar sayısı · ' + entry.count : '',
-            entry.explanation,
-            ...logCauses(entry).map(cause => 'Olası neden · ' + cause),
-            ...logTimingLines(entry),
-            entry.code,
-            entry.details && logDetails(entry)
-        ].filter(Boolean).join('\n');
-    }).join('\n\n');
+    const lines = visibleLogs.map(entry => formatLogEntry(entry)).join('\n\n');
     const url = URL.createObjectURL(new Blob([lines], { type: 'text/plain;charset=utf-8' }));
     const link = document.createElement('a');
     link.href = url;
